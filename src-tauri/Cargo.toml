@@ -1,0 +1,40 @@
+[package]
+name = "orchis"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "orchids_manager_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6.0.0"
+chrono = "0.4.42"
+rusqlite = "0.38.0"
+reqwest = { version = "0.13.1", features = ["blocking", "json", "multipart", "socks"] }
+base64 = "0.22.1"
+axum = "0.8.8"
+tokio = { version = "1.48.0", features = ["full"] }
+imap = "2.4"
+native-tls = "0.2"
+regex = "1.10"
+url = "2"
+open = "5"
+lazy_static = "1.4"
+urlencoding = "2"
+socks = "0.3"
+
