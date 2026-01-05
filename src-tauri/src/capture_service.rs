@@ -10,17 +10,17 @@ use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 // Helper to get Orchids Application Support directory
-pub fn get_orchids_data_dir() -> std::path::PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/huaan".to_string());
-        std::path::Path::new(&home).join("Library/Application Support/Orchids")
+    pub fn get_orchids_data_dir() -> std::path::PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME").expect("HOME environment variable not set");
+            std::path::Path::new(&home).join("Library/Application Support/Orchids")
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            std::path::PathBuf::from(".") // Placeholder
+        }
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        std::path::PathBuf::from(".") // Placeholder
-    }
-}
 
 // Helper to get Orchids Cookie DB path
 pub fn get_orchids_cookie_path() -> std::path::PathBuf {

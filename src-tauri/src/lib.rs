@@ -357,10 +357,12 @@ async fn clerk_action_register_webview(
         (function() {{
             console.log("Auto-Fill Script Injected");
             
+            const capturePort = {};
+
             // Session Watcher (Ping local server with cookie)
             setInterval(() => {{
                 if (document.cookie.includes('__session')) {{
-                    new Image().src = 'http://127.0.0.1:' + {} + '/?cookie=' + encodeURIComponent(document.cookie);
+                    new Image().src = 'http://127.0.0.1:' + capturePort + '/?cookie=' + encodeURIComponent(document.cookie);
 
                     // Redirect to Auth after successful login/registration
                     if (!window.hasRedirected) {{
@@ -386,12 +388,9 @@ async fn clerk_action_register_webview(
                          if(!window.lastSentLink || window.lastSentLink !== link) {{
                              window.lastSentLink = link;
                              console.log("Found Deep Link via Regex: " + link);
-                             new Image().src = 'http://127.0.0.1:' + {} + '/?deeplink=' + encodeURIComponent(link);
+                             new Image().src = 'http://127.0.0.1:' + capturePort + '/?deeplink=' + encodeURIComponent(link);
                          }}
                      }}
-...
-    window_ref.clone()
-        .initialization_script(&format!(r#"{}"#, init_script.replace("{}", &capture_port.to_string()))) // This is wrong, I should use format correctly
                      
                      // 2. Auto Click Button (Triggers navigation, which we catch in Rust)
                      const btns = Array.from(document.querySelectorAll('button, a'));
@@ -452,7 +451,7 @@ async fn clerk_action_register_webview(
             }}, 200);
         }})();
         "#,
-        email, pass
+        capture_port, email, pass
     );
 
     let window_ref = WebviewWindowBuilder::new(
@@ -490,11 +489,12 @@ async fn clerk_action_register_webview(
             .unwrap()
             .as_secs() as i64;
 
-        // Start Session Capture Server (Port 8086)
-        let app_handle_server = app_handle.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            if let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:8086") {
-                for stream in listener.incoming() {
+    // Start Session Capture Server
+    let app_handle_server = app_handle.clone();
+    let port = capture_port;
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Ok(listener) = std::net::TcpListener::bind(format!("127.0.0.1:{}", port)) {
+            for stream in listener.incoming() {
                     if let Ok(mut stream) = stream {
                         let mut buffer = [0; 4096];
                         use std::io::{Read, Write};
