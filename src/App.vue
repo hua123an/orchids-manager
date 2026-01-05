@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, computed, nextTick, watch } from "vue";
 import { safeInvoke as invoke, safeListen as listen } from "./lib/tauri";
+import CheckpointExplorer from "./components/CheckpointExplorer.vue";
 
 // --- State ---
 const accounts = ref([]);
@@ -444,7 +445,7 @@ checkGmailOAuthStatus();
             <h1 class="font-bold text-lg tracking-tight">Orchis</h1>
         </div>
         <nav class="bg-surface rounded-full shadow-sm border border-border p-1 flex items-center gap-1">
-            <button v-for="tab in [{ id: 'dashboard', label: '仪表盘' }, { id: 'accounts', label: '所有账号' }, { id: 'automation', label: '自动化' }, { id: 'proxy', label: 'API 代理' }, { id: 'settings', label: '设置' }]" 
+            <button v-for="tab in [{ id: 'dashboard', label: '仪表盘' }, { id: 'accounts', label: '所有账号' }, { id: 'checkpoints', label: '检查点' }, { id: 'automation', label: '自动化' }, { id: 'proxy', label: 'API 代理' }, { id: 'settings', label: '设置' }]" 
             :key="tab.id" @click="activeTab = tab.id" 
             :class="['px-4 py-1.5 rounded-full text-sm font-medium transition-all', activeTab === tab.id ? 'bg-primary/10 text-primary' : 'text-text-sub hover:text-text-main hover:bg-background']">{{ tab.label }}</button>
         </nav>
@@ -566,6 +567,10 @@ checkGmailOAuthStatus();
                  </div>
                  <div v-if="accounts.length === 0" class="p-12 text-center text-text-sub text-sm">未找到账号。请添加一个以开始。</div>
              </div>
+        </div>
+
+        <div v-if="activeTab === 'checkpoints'" class="h-[calc(100vh-140px)] animate-fade-in">
+            <CheckpointExplorer />
         </div>
 
         <!-- IMAP Settings Modal -->

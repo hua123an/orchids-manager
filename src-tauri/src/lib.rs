@@ -1,4 +1,5 @@
 mod capture_service;
+mod checkpoint_manager;
 mod clerk_utils;
 mod cookie_reader;
 mod gmail_oauth;
@@ -775,7 +776,12 @@ pub fn run() {
             gmail_oauth_start,
             gmail_oauth_status,
             check_imap_code_oauth,
-            reset_machine_id
+            reset_machine_id,
+            checkpoint_manager::get_projects,
+            checkpoint_manager::get_checkpoints,
+            checkpoint_manager::get_checkpoint_files,
+            checkpoint_manager::get_file_content_base64,
+            checkpoint_manager::rollback_checkpoint
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

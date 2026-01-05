@@ -46,3 +46,32 @@ pub struct AccountStore {
     pub active_user_id: Option<String>,
     pub accounts: Vec<Account>,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Project {
+    pub folder_path: String,
+    pub project_id: String,
+    pub project_name: String,
+    pub last_opened: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Checkpoint {
+    pub id: i64,
+    pub message_id: String,
+    pub parent_id: Option<i64>,
+    pub created_at: i64,
+    pub file_count: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CheckpointFile {
+    pub id: i64,
+    pub checkpoint_id: i64,
+    pub file_path: String,
+    pub status: String,
+    pub hash: Option<String>,
+    pub mode: i32,
+    pub is_text: bool,
+    pub has_delta: bool,
+}
