@@ -17,10 +17,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use store::AccountManagerState;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
+#[tauri::command]
+fn reset_machine_id(app: AppHandle) -> Result<String, String> {
+    injection::reset_machine_id(&app)
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
+    format!("你好, {}! 这是来自 Rust 的问候!", name)
 }
 
 #[tauri::command]
@@ -41,13 +46,13 @@ fn delete_account(state: State<'_, AccountManagerState>, id: String) -> Result<(
 #[tauri::command]
 fn start_listener(app: AppHandle, state: State<'_, Arc<CaptureService>>) -> Result<String, String> {
     state.start_monitoring(app);
-    Ok("Monitoring started".into())
+    Ok("监听已启动".into())
 }
 
 #[tauri::command]
 fn stop_listener(state: State<'_, Arc<CaptureService>>) -> Result<String, String> {
     state.stop();
-    Ok("Monitoring stopped".into())
+    Ok("监听已停止".into())
 }
 
 #[tauri::command]
@@ -62,7 +67,7 @@ fn import_current_session(
     // For now stick to main.
 
     if !path.exists() {
-        return Err("Orchids Cookie file not found. Please open Orchids app.".into());
+        return Err("未找到 Orchids Cookie 文件。请打开 Orchids 应用。".into());
     }
 
     match capture_service::process_cookies(path) {
@@ -70,8 +75,8 @@ fn import_current_session(
             state.add_account(account.clone())?;
             Ok(account)
         }
-        Ok(None) => Err("No active session found in Orchids. Please log in.".into()),
-        Err(e) => Err(format!("Failed to read session: {}", e)),
+        Ok(None) => Err("未在 Orchids 中找到活跃会话。请登录。".into()),
+        Err(e) => Err(format!("读取会话失败: {}", e)),
     }
 }
 
@@ -140,19 +145,19 @@ fn get_active_id(state: State<'_, AccountManagerState>) -> Result<Option<String>
 #[tauri::command]
 async fn refresh_active_account(state: State<'_, AccountManagerState>) -> Result<Account, String> {
     // 1. Prepare Data (Fast DB Read)
-    let active_id = state.get_active_id()?.ok_or("No active account")?;
+    let active_id = state.get_active_id()?.ok_or("无活跃账号")?;
     let accounts = state.get_accounts()?;
     let account = accounts
         .iter()
         .find(|a| a.id == active_id)
-        .ok_or("Account not found")?;
+        .ok_or("账号未找到")?;
 
     let token = account
         .cookies
         .iter()
         .find(|c| c.name == "__session")
         .map(|c| c.value.clone())
-        .ok_or("No session token")?;
+        .ok_or("无会话令牌")?;
     let user_id = account.id.clone();
 
     // 2. Heavy Lift (HTTP Request in Thread)
@@ -232,7 +237,7 @@ async fn clerk_action_verify(
     .map_err(|e| e.to_string())??;
 
     state.add_account(account.clone())?;
-    Ok("Verification Successful. Account Saved.".to_string())
+    Ok("验证成功。账号已保存。".to_string())
 }
 
 #[tauri::command]
@@ -265,7 +270,7 @@ async fn clerk_action_login(
     .map_err(|e| e.to_string())??;
 
     state.add_account(account.clone())?;
-    Ok("Login and Save Successful".to_string())
+    Ok("登录并保存成功".to_string())
 }
 
 #[tauri::command]
@@ -293,33 +298,27 @@ async fn clerk_action_register_webview(
     imap_user: String,
     imap_pass: String,
 ) -> Result<String, String> {
-    // 1. Reset Local App
-    println!("Reseting Orchids App...");
-    let _ = std::process::Command::new("killall")
-        .arg("Orchids")
-        .output();
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    // 1. Reset Machine ID & Hard Restart (Kills app, clears cookies, keeps LocalStorage, restarts)
+    println!("Resetting Device Identity for Registration...");
 
-    // Clear App Data (Force Logout)
-    println!("Clearing Orchids Data...");
-    let _ = std::process::Command::new("sh")
-        .arg("-c")
-        .arg("rm -rf ~/Library/Application\\ Support/Orchids")
-        .output();
-    let _ = std::process::Command::new("sh")
-        .arg("-c")
-        .arg("rm -rf ~/Library/Application\\ Support/Orchids\\ *")
-        .output();
+    // Log Current ID
+    let updater_path =
+        std::path::Path::new("/Users/huaan/Library/Application Support/Orchids/.updaterId");
+    if let Ok(current_id) = std::fs::read_to_string(updater_path) {
+        println!("Current Machine ID: {}", current_id.trim());
+    } else {
+        println!("Current Machine ID: None (File not found)");
+    }
 
-    // 2. Launch & Initialize
-    println!("Launching Orchids...");
-    let _ = std::process::Command::new("open")
-        .arg("-a")
-        .arg("Orchids")
-        .output();
-    std::thread::sleep(std::time::Duration::from_secs(5));
+    let _ = app.emit("imap_log", "正在重置设备身份 (Machine ID)...".to_string());
+    let reset_msg = injection::reset_machine_id(&app)?;
+    let _ = app.emit("imap_log", format!("重置完成: {}", reset_msg));
+    println!("{}", reset_msg);
 
-    // 3. Click "Log in" via AppleScript to prepare for Deep Link
+    // Ultra-Fast launch
+    std::thread::sleep(std::time::Duration::from_millis(800));
+
+    // 2. Click "Log in" / "Sign Up" via AppleScript to prepare for Deep Link
     println!("Clicking Log In...");
     let _ = std::process::Command::new("osascript")
         .arg("-e")
@@ -343,8 +342,8 @@ async fn clerk_action_register_webview(
         )
         .output();
 
-    // Give it a moment to open the waiting screen
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    // Minimizing wait
+    std::thread::sleep(std::time::Duration::from_millis(200));
 
     let url_str = "https://accounts.orchids.app/sign-up";
 
@@ -365,7 +364,7 @@ async fn clerk_action_register_webview(
                         console.log("Orchis: Session found, redirecting to auth...");
                         setTimeout(() => {{
                             window.location.href = "https://orchids.app/desktop/auth";
-                        }}, 1500);
+                        }}, 10);
                     }}
                 }}
             }}, 2000);
@@ -439,7 +438,7 @@ async fn clerk_action_register_webview(
                          if(submitBtn) {{
                              submitBtn.click();
                          }}
-                    }}, 800);
+                     }}, 50);
                 }} else if (attempts >= maxAttempts) {{
                      clearInterval(interval);
                 }}
@@ -501,7 +500,7 @@ async fn clerk_action_register_webview(
                                     if let Some(end) = rest.find(' ') {
                                         let encoded = &rest[..end];
                                         if let Ok(cookie) = urlencoding::decode(encoded) {
-                                            println!("Session Cookie Captured!");
+                                            println!("会话 Cookie 已捕获！");
                                             let _ = app_handle_server
                                                 .emit("session_captured", cookie.to_string());
                                         }
@@ -511,8 +510,22 @@ async fn clerk_action_register_webview(
                                     if let Some(end) = rest.find(' ') {
                                         let encoded = &rest[..end];
                                         if let Ok(link) = urlencoding::decode(encoded) {
-                                            println!("Deep Link Captured: {}", link);
+                                            println!("捕获深度链接: {}", link);
                                             let _ = open::that(link.to_string());
+
+                                            // Close window after 2s
+                                            let app_close = app_handle_server.clone();
+                                            std::thread::spawn(move || {
+                                                std::thread::sleep(std::time::Duration::from_secs(
+                                                    2,
+                                                ));
+                                                if let Some(w) =
+                                                    app_close.get_webview_window("register_popup")
+                                                {
+                                                    println!("Closing registration window...");
+                                                    let _ = w.close();
+                                                }
+                                            });
                                         }
                                     }
                                 }
@@ -526,20 +539,17 @@ async fn clerk_action_register_webview(
             }
         });
 
-        let mut stability_count = 0;
-        let mut last_seen_code = String::new();
-
         tauri::async_runtime::spawn(async move {
-            let _ = app_handle.emit("imap_log", format!("IMAP Polling Started for {}", u));
-            println!("IMAP Polling Started for {}", u);
+            let _ = app_handle.emit("imap_log", format!("IMAP 轮询已开始：{}", u));
+            println!("IMAP 轮询已开始：{}", u);
 
-            for i in 0..24 {
-                // 5s interval
+            for i in 0..80 {
+                // 500ms interval for high frequency polling
                 if i > 0 {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 }
 
-                let _ = app_handle.emit("imap_log", format!("Checking Inbox ({}/24)...", i + 1));
+                let _ = app_handle.emit("imap_log", format!("正在检查收件箱 ({}/80)...", i + 1));
 
                 // Check if OAuth is available
                 let use_oauth = gmail_oauth::is_authenticated() && h == "imap.gmail.com";
@@ -563,111 +573,97 @@ async fn clerk_action_register_webview(
 
                 match code_res {
                     Ok(Ok(c)) => {
-                        println!("Candidate Code Found: {}", c);
+                        println!("找到候选验证码: {}", c);
 
-                        if c == last_seen_code {
-                            stability_count += 1;
-                        } else {
-                            last_seen_code = c.clone();
-                            stability_count = 1;
-                            let _ = app_handle
-                                .emit("imap_log", format!("Candidate found: {}. Verifying...", c));
+                        let _ =
+                            app_handle.emit("imap_log", format!("找到验证码: {}. 正在验证...", c));
+
+                        // Copy to clipboard
+                        if let Ok(mut child) = std::process::Command::new("pbcopy")
+                            .stdin(std::process::Stdio::piped())
+                            .spawn()
+                        {
+                            if let Some(mut stdin) = child.stdin.take() {
+                                use std::io::Write;
+                                let _ = stdin.write_all(c.as_bytes());
+                            }
                         }
 
-                        if stability_count >= 3 {
-                            // Copy to clipboard
-                            if let Ok(mut child) = std::process::Command::new("pbcopy")
-                                .stdin(std::process::Stdio::piped())
-                                .spawn()
-                            {
-                                if let Some(mut stdin) = child.stdin.take() {
-                                    use std::io::Write;
-                                    let _ = stdin.write_all(c.as_bytes());
-                                }
+                        let _ =
+                            app_handle.emit("imap_log", format!("验证码已复制。正在模拟粘贴...",));
+
+                        // Instant focus
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+
+                        // System-level Cmd+V
+                        let _ = std::process::Command::new("osascript")
+                            .arg("-e")
+                            .arg("tell application \"System Events\" to keystroke \"v\" using command down")
+                            .output();
+
+                        let _ = app_handle.emit("imap_log", format!("验证码已验证: {}", c));
+
+                        let inject_js = format!(
+                            r#"
+                            (function() {{
+                                    const code = '{}';
+                                    console.log("Orchis 验证码: " + code);
+                                    
+                                    function tryFill() {{
+                                        const otpInput = document.querySelector('input[data-input-otp="true"]') || document.querySelector('input[name="code"]') || document.querySelector('.cl-otpCodeField input');
+                                        if(!otpInput) return false;
+                                        
+                                        // If already filled, stop
+                                        if(otpInput.value === code) return true;
+                                        
+                                        console.log("Orchis: 尝试填充...");
+                                        otpInput.focus();
+                                        otpInput.click();
+                                        
+                                        // 1. Native Setter
+                                        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                                        nativeSetter.call(otpInput, code);
+                                        
+                                        // 2. Events covering all bases
+                                        otpInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                        otpInput.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertFromPaste', data: code }}));
+                                        otpInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                        
+                                        return otpInput.value === code;
+                                    }}
+                                    
+                                    // Try immediately
+                                    tryFill();
+                                    
+                                    // And retry periodically
+                                    const interval = setInterval(() => {{
+                                        if(tryFill()) {{
+                                            clearInterval(interval);
+                                            console.log("Orchis: 填充成功");
+                                            setTimeout(() => {{
+                                                const btns = Array.from(document.querySelectorAll('button'));
+                                                const nextBtn = btns.find(b => b.innerText.includes('Next') || b.innerText.includes('Continue') || b.innerText.includes('Verify'));
+                                                if(nextBtn) nextBtn.click();
+                                            }}, 50);
+                                        }}
+                                    }}, 1000);
+                            }})();
+                            "#,
+                            c
+                        );
+
+                        // Execute JS directly in the Webview
+                        if let Some(w) = app_handle.get_webview_window("register_popup") {
+                            println!("Injecting JS into register_popup...");
+                            if let Err(e) = w.eval(&inject_js) {
+                                println!("JS Injection Error: {}", e);
                             }
-
-                            let _ = app_handle
-                                .emit("imap_log", format!("Code Copied. Simulating Paste...",));
-
-                            // Give JS time to focus the input
-                            std::thread::sleep(std::time::Duration::from_millis(500));
-
-                            // System-level Cmd+V
-                            let _ = std::process::Command::new("osascript")
-                                .arg("-e")
-                                .arg("tell application \"System Events\" to keystroke \"v\" using command down")
-                                .output();
-
-                            let _ =
-                                app_handle.emit("imap_log", format!("Code Verified Stable: {}", c));
-
-                            let inject_js = format!(
-                                r#"
-                                (function() {{
-                                     const code = '{}';
-                                     console.log("Orchis Code: " + code);
-                                     
-                                     function tryFill() {{
-                                         const otpInput = document.querySelector('input[data-input-otp="true"]') || document.querySelector('input[name="code"]') || document.querySelector('.cl-otpCodeField input');
-                                         if(!otpInput) return false;
-                                         
-                                         // If already filled, stop
-                                         if(otpInput.value === code) return true;
-                                         
-                                         console.log("Orchis: Attempting fill...");
-                                         otpInput.focus();
-                                         otpInput.click();
-                                         
-                                         // 1. Native Setter
-                                         const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                                         nativeSetter.call(otpInput, code);
-                                         
-                                         // 2. Events covering all bases
-                                         otpInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                                         otpInput.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertFromPaste', data: code }}));
-                                         otpInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                                         
-                                         return otpInput.value === code;
-                                     }}
-                                     
-                                     // Try immediately
-                                     tryFill();
-                                     
-                                     // And retry periodically
-                                     const interval = setInterval(() => {{
-                                         if(tryFill()) {{
-                                             clearInterval(interval);
-                                             console.log("Orchis: Fill Success");
-                                             setTimeout(() => {{
-                                                 const btns = Array.from(document.querySelectorAll('button'));
-                                                 const nextBtn = btns.find(b => b.innerText.includes('Next') || b.innerText.includes('Continue') || b.innerText.includes('Verify'));
-                                                 if(nextBtn) nextBtn.click();
-                                             }}, 800);
-                                         }}
-                                     }}, 1000);
-                                }})();
-                                "#,
-                                c
-                            );
-
-                            // Execute JS directly in the Webview
-                            if let Some(w) = app_handle.get_webview_window("register_popup") {
-                                println!("Injecting JS into register_popup...");
-                                if let Err(e) = w.eval(&inject_js) {
-                                    println!("JS Injection Error: {}", e);
-                                }
-                            } else {
-                                println!("Error: Register popup window not found!");
-                            }
-
-                            // Stop loop
-                            break;
                         } else {
-                            let _ = app_handle.emit(
-                                "imap_log",
-                                format!("Verifying stability ({}/3)...", stability_count),
-                            );
+                            println!("Error: Register popup window not found!");
                         }
+
+                        // Stop loop
+                        break;
                     }
                     Ok(Err(e)) => {
                         // Log error but continue polling (maybe email hasn't arrived yet)
@@ -683,7 +679,7 @@ async fn clerk_action_register_webview(
         });
     }
 
-    Ok("WebView Opened with Auto-Fill + Async IMAP Polling".to_string())
+    Ok("WebView 已打开，带有自动填充 + 异步 IMAP 轮询".to_string())
 }
 
 #[tauri::command]
@@ -696,7 +692,7 @@ async fn gmail_oauth_start(app: AppHandle) -> Result<String, String> {
     gmail_oauth::save_tokens_to_disk(&app, &result);
 
     Ok(format!(
-        "OAuth successful! Access token obtained (expires in {:?}s)",
+        "OAuth 成功！获取到访问令牌 (过期时间 {:?}秒)",
         result.expires_in
     ))
 }
@@ -709,9 +705,9 @@ fn gmail_oauth_status(app: AppHandle) -> Result<String, String> {
     }
 
     if gmail_oauth::is_authenticated() {
-        Ok("Authenticated".to_string())
+        Ok("已认证".to_string())
     } else {
-        Ok("Not authenticated".to_string())
+        Ok("未认证".to_string())
     }
 }
 
@@ -771,7 +767,8 @@ pub fn run() {
             clerk_action_register_webview,
             gmail_oauth_start,
             gmail_oauth_status,
-            check_imap_code_oauth
+            check_imap_code_oauth,
+            reset_machine_id
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

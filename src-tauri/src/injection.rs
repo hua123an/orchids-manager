@@ -94,6 +94,54 @@ pub fn check_captured_data(
         // Cleanup
         let _ = fs::remove_file(capture_file);
 
+        // Close the browser tab (Chrome/Safari/Arc)
+        let _ = std::thread::spawn(|| {
+            let script = r#"
+            try
+                tell application "Google Chrome"
+                    set windowList to every window
+                    repeat with aWindow in windowList
+                        set tabList to every tab of aWindow
+                        repeat with aTab in tabList
+                            if URL of aTab contains "orchids.app" then
+                                close aTab
+                            end if
+                        end repeat
+                    end repeat
+                end tell
+            end try
+            try
+                tell application "Safari"
+                    set windowList to every window
+                    repeat with aWindow in windowList
+                        set tabList to every tab of aWindow
+                        repeat with aTab in tabList
+                            if URL of aTab contains "orchids.app" then
+                                close aTab
+                            end if
+                        end repeat
+                    end repeat
+                end tell
+            end try
+            try
+                tell application "Arc"
+                     tell front window
+                        set tabList to every tab
+                        repeat with aTab in tabList
+                            if URL of aTab contains "orchids.app" then
+                                close aTab
+                            end if
+                        end repeat
+                    end tell
+                end tell
+            end try
+            "#;
+            let _ = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(script)
+                .output();
+        });
+
         return Ok(Some(account));
     }
 
@@ -115,25 +163,12 @@ pub fn trigger_restore(_app_handle: &AppHandle, account: &Account) -> Result<(),
         .status();
 
     // Wait for it to die
-    thread::sleep(Duration::from_secs(2)); // Increased wait
+    thread::sleep(Duration::from_millis(100)); // Minimal wait
     println!("Orchids killed. Opening DB...");
 
     // 2. Open DB
     let path = Path::new(ORCHIDS_COOKIE_PATH);
-
-    // Nuke journal files to clear locks/state (unsafe but effective for reset)
-    if let Some(parent) = path.parent() {
-        if let Some(filename_os) = path.file_name() {
-            let filename = filename_os.to_string_lossy();
-            let journal = parent.join(format!("{}-journal", filename));
-            let wal = parent.join(format!("{}-wal", filename));
-            let shm = parent.join(format!("{}-shm", filename));
-
-            let _ = fs::remove_file(journal);
-            let _ = fs::remove_file(wal);
-            let _ = fs::remove_file(shm);
-        }
-    }
+    // REMOVED manual deletion of journal/wal files to let SQLite handle recovery/consistency
 
     if !path.exists() {
         return Err("Orchids cookie database not found".into());
@@ -141,17 +176,19 @@ pub fn trigger_restore(_app_handle: &AppHandle, account: &Account) -> Result<(),
 
     let mut conn = Connection::open(path).map_err(|e| format!("Failed to open DB: {}", e))?;
 
+    // Set busy timeout to allow file locking to resolve
+    let _ = conn.execute("PRAGMA busy_timeout = 5000;", []);
+
     let tx = conn
         .transaction()
         .map_err(|e| format!("Transaction error: {}", e))?;
 
-    // 3. Clear existing cookies (or just __session ones? safer to clear all for clean switch)
-    // Let's clear all for now to avoid conflicts.
+    // 3. Clear existing cookies
     println!("Clearing old cookies...");
     tx.execute("DELETE FROM cookies", [])
         .map_err(|e| format!("Failed to clear cookies: {}", e))?;
 
-    // 4. Insert new cookies - FULL SCHEMA (20 columns, all NOT NULL)
+    // 4. Insert new cookies - FULL SCHEMA
     let mut stmt = tx.prepare(
         "INSERT INTO cookies (
             creation_utc, host_key, top_frame_site_key, name, value, encrypted_value, path,
@@ -207,59 +244,133 @@ pub fn trigger_restore(_app_handle: &AppHandle, account: &Account) -> Result<(),
 
     // 5. Restart Orchids
     println!("Restarting Orchids...");
-    thread::sleep(Duration::from_secs(1)); // Brief pause before launch
+    thread::sleep(Duration::from_millis(100));
     let _ = Command::new("open").arg("-a").arg("Orchids").spawn();
 
+    Ok(())
+}
+
+fn clear_cookies_db(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let conn = Connection::open(path).map_err(|e| format!("DB Open Error: {}", e))?;
+    let _ = conn.execute("PRAGMA busy_timeout = 5000;", []);
+    conn.execute("DELETE FROM cookies", [])
+        .map_err(|e| format!("DB Delete Error: {}", e))?;
     Ok(())
 }
 
 pub fn clear_cookies_and_restart(_app_handle: &AppHandle) -> Result<(), String> {
     // 1. Kill Orchids aggressively
     println!("Killing Orchids for logout...");
-
-    // Use killall with suppressed output to avoid "No matching processes" noise
-    // And avoid pkill -f which might match "orchids-manager" path!
     let _ = Command::new("killall")
         .arg("Orchids")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
 
-    thread::sleep(Duration::from_secs(2)); // Wait longer for lock release
+    thread::sleep(Duration::from_millis(100));
 
-    // 2. Clear Cookies by DELETING the file
+    // 2. Clear Cookies (SQL prefered to preserve DB structure)
     let path = Path::new(ORCHIDS_COOKIE_PATH);
-    if path.exists() {
-        if let Err(e) = fs::remove_file(path) {
-            println!("Failed to delete Cookies file: {}", e);
-            // If delete fails, try SQL delete as fallback
-            if let Ok(conn) = Connection::open(path) {
-                let _ = conn.execute("DELETE FROM cookies", []);
-            }
-        } else {
-            println!("Cookies file deleted.");
-        }
-    }
-
-    // Also try to delete journal/wal files
-    if let Some(parent) = path.parent() {
-        if let Some(filename_os) = path.file_name() {
-            let filename = filename_os.to_string_lossy();
-            let journal = parent.join(format!("{}-journal", filename));
-            let wal = parent.join(format!("{}-wal", filename));
-
-            if journal.exists() {
-                let _ = fs::remove_file(journal);
-            }
-            if wal.exists() {
-                let _ = fs::remove_file(wal);
-            }
-        }
+    if let Err(e) = clear_cookies_db(path) {
+        println!("SQL Clear failed, deleting file: {}", e);
+        let _ = fs::remove_file(path);
     }
 
     // 3. Restart Orchids
-    thread::sleep(Duration::from_secs(1));
+    println!("Restarting Orchids...");
+    thread::sleep(Duration::from_millis(100));
     let _ = Command::new("open").arg("-a").arg("Orchids").spawn();
 
     Ok(())
+}
+
+pub fn reset_machine_id(_app_handle: &AppHandle) -> Result<String, String> {
+    println!("Resetting Machine ID...");
+
+    // 0. Backup Local Storage (Protection against app wipe)
+    let ls_path = Path::new("/Users/huaan/Library/Application Support/Orchids/Local Storage");
+    let ls_bak = Path::new("/Users/huaan/Library/Application Support/Orchids/Local Storage.bak");
+    if ls_path.exists() {
+        println!("Backing up Local Storage...");
+        let _ = Command::new("cp")
+            .arg("-R")
+            .arg(ls_path)
+            .arg(ls_bak)
+            .status();
+    }
+
+    // 1. Kill Orchids
+    println!("Killing Orchids...");
+    let _ = Command::new("killall")
+        .arg("Orchids")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    thread::sleep(Duration::from_millis(500));
+
+    // 2. Generate new UUID
+    let output = Command::new("uuidgen")
+        .output()
+        .map_err(|e| format!("Failed to generate UUID: {}", e.to_string()))?;
+
+    let new_uuid = String::from_utf8(output.stdout)
+        .map_err(|e| e.to_string())?
+        .trim()
+        .to_string();
+
+    if new_uuid.is_empty() {
+        return Err("Generated empty UUID".into());
+    }
+
+    // 3. Write to .updaterId
+    let updater_path = Path::new("/Users/huaan/Library/Application Support/Orchids/.updaterId");
+    if let Some(parent) = updater_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write(updater_path, &new_uuid).map_err(|e| format!("Failed to write .updaterId: {}", e))?;
+
+    println!("New Machine ID written: {}", new_uuid);
+
+    // 4. Clear Cookies - Attempt SQL Clean First
+    let cookie_path = Path::new(ORCHIDS_COOKIE_PATH);
+    if let Err(e) = clear_cookies_db(cookie_path) {
+        println!("SQL Clear failed, deleting file: {}", e);
+        let _ = fs::remove_file(cookie_path); // Fallback
+                                              // Also remove journals in fallback case only
+        if let Some(parent) = cookie_path.parent() {
+            if let Some(filename_os) = cookie_path.file_name() {
+                let filename = filename_os.to_string_lossy();
+                let _ = fs::remove_file(parent.join(format!("{}-journal", filename)));
+                let _ = fs::remove_file(parent.join(format!("{}-wal", filename)));
+            }
+        }
+    }
+
+    // 5. Restore Local Storage if it was deleted/wiped (Pre-emptive restore won't stop app from wiping if it wants to,
+    // but copying it back *might* help if we restore after launch? No, file locks)
+    // Actually, if we just *don't delete it*, and the App wipes it, we can't stop the app.
+    // BUT the backup allows the USER to recover manualy if needed.
+    // Let's try to restore it inplace if it's missing.
+    if !ls_path.exists() && ls_bak.exists() {
+        println!("Restoring Local Storage...");
+        let _ = Command::new("cp")
+            .arg("-R")
+            .arg(ls_bak)
+            .arg(ls_path)
+            .status();
+    }
+
+    // 5. Restart Orchids
+    println!("Restarting Orchids...");
+    thread::sleep(Duration::from_millis(500));
+    let _ = Command::new("open").arg("-a").arg("Orchids").spawn();
+
+    Ok(format!(
+        "Reset Success. App Restarted. New ID: {}",
+        new_uuid
+    ))
 }

@@ -71,11 +71,11 @@ pub fn clerk_login(email: &str, password: &str) -> Result<String, String> {
                 }
             }
         }
-        return Err(format!("Clerk Login Failed ({}): {}", status, body));
+        return Err(format!("Clerk 登录失败 ({}): {}", status, body));
     }
 
     if session_token.is_empty() {
-        return Err("Login successful but no session cookie received".to_string());
+        return Err("登录成功但未收到会话 Cookie".to_string());
     }
 
     Ok(session_token)
@@ -123,11 +123,11 @@ pub fn clerk_register(
                 if let Some(msg) = errs[0]["message"].as_str() {
                     // Include code/long message
                     let code = errs[0]["code"].as_str().unwrap_or("unknown_code");
-                    return Err(format!("Clerk Error [{}]: {}", code, msg));
+                    return Err(format!("Clerk 错误 [{}]: {}", code, msg));
                 }
             }
         }
-        return Err(format!("Clerk Register Failed ({}): {}", status, body));
+        return Err(format!("Clerk 注册失败 ({}): {}", status, body));
     }
 
     Ok(body)
@@ -170,10 +170,7 @@ pub fn clerk_prepare_verification(sign_up_id: &str) -> Result<String, String> {
     let body = resp.text().map_err(|e: reqwest::Error| e.to_string())?;
 
     if !status.is_success() {
-        return Err(format!(
-            "Prepare Verification Failed ({}): {}",
-            status, body
-        ));
+        return Err(format!("准备验证失败 ({}): {}", status, body));
     }
     Ok(body)
 }
@@ -220,10 +217,7 @@ pub fn clerk_attempt_verification(sign_up_id: &str, code: &str) -> Result<String
     let body = resp.text().map_err(|e: reqwest::Error| e.to_string())?;
 
     if !status.is_success() {
-        return Err(format!(
-            "Attempt Verification Failed ({}): {}",
-            status, body
-        ));
+        return Err(format!("尝试验证失败 ({}): {}", status, body));
     }
 
     if !session_token.is_empty() {

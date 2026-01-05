@@ -12,7 +12,7 @@ watch(activeTab, (newTab) => {
 });
 
 const isListening = ref(false);
-const statusMsg = ref("Ready");
+const statusMsg = ref("就绪");
 const showToast = ref(false);
 const toastMsg = ref("");
 const debugLogs = ref([]);
@@ -21,7 +21,7 @@ const showLogoutModal = ref(false);
 
 const proxyRunning = ref(false);
 const proxyPort = ref(3000);
-const proxyStatus = ref("Stopped");
+const proxyStatus = ref("已停止");
 const proxyUrl = computed(() => `http://127.0.0.1:${proxyPort.value}`);
 
 // Automation State
@@ -36,7 +36,7 @@ const autoLogs = ref([]);
 const autoRunning = ref(false);
 
 // Gmail OAuth State
-const gmailOAuthStatus = ref("Not authenticated");
+const gmailOAuthStatus = ref("未认证");
 const gmailOAuthLoading = ref(false);
 
 // --- Icons ---
@@ -65,7 +65,7 @@ onMounted(async () => {
   await toggleListener(true);
 
   import("@tauri-apps/api/event").then(({ listen }) => {
-    listen("account-captured", (event) => { showNotification(`Captured: ${event.payload.display_name}`); loadAccounts(); });
+    listen("account-captured", (event) => { showNotification(`已捕获: ${event.payload.display_name}`); loadAccounts(); });
     listen("debug-log", (event) => {
       debugLogs.value.unshift(`[${new Date().toLocaleTimeString()}] ${event.payload}`);
       if (debugLogs.value.length > 200) debugLogs.value.pop();
@@ -90,7 +90,7 @@ onMounted(async () => {
         if (credits < 50000) {
             const best = recommendAccounts.value[0];
             if (best && (best.user_info?.credits || 0) > 50000) {
-                showNotification(`Low Credits (${formatCredits(credits)}). Switching to ${best.display_name}...`);
+                showNotification(`积分不足 (${formatCredits(credits)})。正在切换至 ${best.display_name}...`);
                 await setActive(best.id);
             }
         }
@@ -105,8 +105,14 @@ const avgCredits = computed(() => {
     const sum = accounts.value.reduce((acc, curr) => acc + (curr.user_info?.credits || 0), 0);
     return Math.floor(sum / accounts.value.length);
 });
+
+// Added totalCredits computed
+const totalCredits = computed(() => {
+    return accounts.value.reduce((acc, curr) => acc + (curr.user_info?.credits || 0), 0);
+});
+
 const greetingName = computed(() => {
-    if (!activeAccount.value || !activeAccount.value.email) return "Chief";
+    if (!activeAccount.value || !activeAccount.value.email) return "指挥官";
     return activeAccount.value.email.split('@')[0];
 });
 
@@ -120,7 +126,6 @@ function formatCredits(n) {
 function log(msg) {
     autoLogs.value.unshift(`[${new Date().toLocaleTimeString()}] ${msg}`);
 }
-
 
 // IMAP Profile Logic
 const showImapSettings = ref(false);
@@ -152,35 +157,58 @@ onMounted(() => {
             }
         } catch(e){}
     }
-
-    // Auto-test removed. Please use manual start.
 });
 
 const emailPrefix = ref("");
-const emailSuffix = ref("@huaan666.site");
-const customSuffix = ref("");
-const isCustomSuffix = computed(() => emailSuffix.value === "@custom");
+const emailSuffix = ref("@gmail.com");
+
+// Email Domain Management
+const emailDomains = ref(JSON.parse(localStorage.getItem('email_domains') || '["@gmail.com"]'));
+const showDomainManager = ref(false);
+const newDomain = ref("");
+
+function saveEmailDomains() {
+    localStorage.setItem('email_domains', JSON.stringify(emailDomains.value));
+}
+
+function addEmailDomain() {
+    let domain = newDomain.value.trim();
+    if (!domain) return;
+    if (!domain.startsWith('@')) domain = '@' + domain;
+    if (!emailDomains.value.includes(domain)) {
+        emailDomains.value.push(domain);
+        saveEmailDomains();
+    }
+    newDomain.value = '';
+}
+
+function removeEmailDomain(domain) {
+    if (domain === '@gmail.com') return; // Can't remove default
+    emailDomains.value = emailDomains.value.filter(d => d !== domain);
+    if (emailSuffix.value === domain) emailSuffix.value = '@gmail.com';
+    saveEmailDomains();
+}
 
 function updateAutoEmail() {
-    const suffix = isCustomSuffix.value ? customSuffix.value : emailSuffix.value;
-    autoEmail.value = emailPrefix.value + suffix;
+    autoEmail.value = emailPrefix.value + emailSuffix.value;
 }
 
 function fillTestData() {
-   if (emailSuffix.value !== '@huaan666.site') return;
+    // Only works for custom domains (not gmail)
+    if (emailSuffix.value === '@gmail.com') return;
    
-   // Username: letters and numbers only (no underscores)
-   const rand = Math.random().toString(36).substring(2, 8);
-   emailPrefix.value = `huaan${rand}`;
+    // Username: letters and numbers only (no underscores)
+    const rand = Math.random().toString(36).substring(2, 8);
+    emailPrefix.value = `user${rand}`;
    
-   updateAutoEmail();
+    updateAutoEmail();
    
-   // Password: letters, numbers, @, .
-   autoPass.value = `Huaan.2026@${rand}`; 
+    // Password: letters, numbers, @, .
+    autoPass.value = `Pass.2026@${rand}`; 
 }
 
 watch(autoMode, (newMode) => {
-    if (newMode === 'register' && !emailPrefix.value && emailSuffix.value === '@huaan666.site') {
+    if (newMode === 'register' && !emailPrefix.value && emailSuffix.value !== '@gmail.com') {
         fillTestData();
     }
 });
@@ -189,15 +217,15 @@ function applyPreset(type) {
     if(type === 'gmail') {
         editingProfile.value.host = 'imap.gmail.com';
         editingProfile.value.port = 993;
-        editingProfile.value.name = 'Gmail Config';
+        editingProfile.value.name = 'Gmail 配置';
     } else if(type === 'qq') {
         editingProfile.value.host = 'imap.qq.com';
         editingProfile.value.port = 993;
-        editingProfile.value.name = 'QQ Config';
+        editingProfile.value.name = 'QQ 配置';
     } else if(type === '163') {
         editingProfile.value.host = 'imap.163.com';
         editingProfile.value.port = 993;
-        editingProfile.value.name = '163 Config';
+        editingProfile.value.name = '163 配置';
     }
 }
 
@@ -230,7 +258,7 @@ function saveProfile() {
 }
 
 function deleteProfile(id) {
-    if(!confirm("Delete this profile?")) return;
+    if(!confirm("删除此配置？")) return;
     imapProfiles.value = imapProfiles.value.filter(x => x.id !== id);
     localStorage.setItem('imap_profiles', JSON.stringify(imapProfiles.value));
 }
@@ -245,7 +273,7 @@ function applyProfile(p) {
     imapPort.value = p.port;
     if(p.user) imapUser.value = p.user;
     if(p.pass) imapPass.value = p.pass;
-    log(`Applied IMAP Profile: ${p.name}`);
+    log(`已应用 IMAP 配置: ${p.name}`);
 }
 
 function applyProfileById(id) {
@@ -259,7 +287,7 @@ async function getTurnstileToken() {
             // Try waiting
             setTimeout(() => {
                 if(window.turnstile) resolve(getTurnstileToken());
-                else reject("Turnstile not loaded");
+                else reject("Turnstile 未加载");
             }, 1000);
             return;
         }
@@ -271,7 +299,7 @@ async function getTurnstileToken() {
                     resolve(token);
                 },
                 'error-callback': function() {
-                    reject("Turnstile Error");
+                    reject("Turnstile 错误");
                 },
             });
         } catch(e) { reject(e); }
@@ -281,16 +309,16 @@ async function getTurnstileToken() {
 async function startAutomation() {
     if(autoRunning.value) return;
     autoRunning.value = true;
-    log(`Starting ${autoMode.value} flow for ${autoEmail.value}...`);
+    log(`正在开始 ${autoMode.value} 流程，目标: ${autoEmail.value}...`);
     
     try {
         let res;
         if (autoMode.value === 'login') {
-            log("Sending Login Request...");
+            log("正在发送登录请求...");
             res = await invoke("clerk_action_login", { email: autoEmail.value, pass: autoPass.value });
-            log("SUCCESS: " + res);
+            log("成功: " + res);
         } else if (autoMode.value === 'register') {
-             log("Opening Registration Window...");
+             log("正在打开注册窗口...");
              res = await invoke("clerk_action_register_webview", {
                  email: autoEmail.value,
                  pass: autoPass.value,
@@ -300,11 +328,11 @@ async function startAutomation() {
                  imapPass: imapPass.value || ""
              });
              log(res);
-             log("Please complete the registration in the new window.");
+             log("请在新窗口完成注册。");
              // Stop here, user interaction required in popup
              return; 
         } else {
-            log("Unknown mode");
+            log("未知模式");
             return;
         }
             
@@ -313,13 +341,13 @@ async function startAutomation() {
             
             const signUp = json.response || json;
             if (signUp && signUp.id) {
-                log(`Sign Up Init (ID: ${signUp.id}). Waiting for email...`);
+                log(`注册初始化 (ID: ${signUp.id})。等待邮件...`);
                 
                 // Poll IMAP
                 let code = null;
                 for(let i=0; i<12; i++) { // 60 seconds
                     await new Promise(r => setTimeout(r, 5000));
-                    log(`Reading Inbox (${i+1}/12)...`);
+                    log(`正在读取收件箱 (${i+1}/12)...`);
                     try {
                         const val = await invoke("check_imap_code", { 
                            host: imapHost.value, 
@@ -329,7 +357,7 @@ async function startAutomation() {
                         });
                         if(val) {
                             code = val;
-                            log("Code Fetched: " + code);
+                            log("获取验证码: " + code);
                             break;
                         }
                     } catch(e) {
@@ -338,17 +366,17 @@ async function startAutomation() {
                 }
                 
                 if(code) {
-                    log("Verifying Code...");
+                    log("正在验证代码...");
                     const vRes = await invoke("clerk_action_verify", { signUpId: signUp.id, code: code });
-                    log("Final Result: " + vRes);
+                    log("最终结果: " + vRes);
                 } else {
-                    log("Timeout: No verification code found in email.");
+                    log("超时: 邮件中未找到验证码。");
                 }
             } else {
-                log("Register Error: " + res.substring(0, 100));
+                log("注册错误: " + res.substring(0, 100));
             }
     } catch(e) {
-        log("Error: " + e);
+        log("错误: " + e);
     } finally {
         autoRunning.value = false;
     }
@@ -356,28 +384,28 @@ async function startAutomation() {
 
 async function loadAccounts() { try { accounts.value = await invoke("get_accounts"); activeAccountId.value = await invoke("get_active_id"); } catch (e) { console.error(e); } }
 async function toggleListener(enable) {
-  try { if (enable) { await invoke("uninject_orchids").catch(() => {}); const res = await invoke("start_listener"); statusMsg.value = res; isListening.value = true; } else { await invoke("stop_listener"); statusMsg.value = "Stopped"; isListening.value = false; } } catch (e) { isListening.value = false; }
+  try { if (enable) { await invoke("uninject_orchids").catch(() => {}); const res = await invoke("start_listener"); statusMsg.value = res; isListening.value = true; } else { await invoke("stop_listener"); statusMsg.value = "已停止"; isListening.value = false; } } catch (e) { isListening.value = false; }
 }
-async function importSession() { try { showNotification("Scanning..."); await invoke("import_current_session"); showNotification("Imported"); await loadAccounts(); } catch (e) { showNotification("Error: " + e); } }
-async function setActive(id) { activeAccountId.value = id; try { await invoke("set_active_account", { id, capture: null }); showNotification("Switching..."); } catch (e) { showNotification("Error: " + e); } }
-async function deleteAccount(id) { if (!confirm("Remove account?")) return; await invoke("delete_account", { id }); await loadAccounts(); }
+async function importSession() { try { showNotification("扫描中..."); await invoke("import_current_session"); showNotification("已导入"); await loadAccounts(); } catch (e) { showNotification("错误: " + e); } }
+async function setActive(id) { activeAccountId.value = id; try { await invoke("set_active_account", { id, capture: null }); showNotification("正在切换..."); } catch (e) { showNotification("错误: " + e); } }
+async function deleteAccount(id) { if (!confirm("移除账号？")) return; await invoke("delete_account", { id }); await loadAccounts(); }
 async function addIdentity() { showLogoutModal.value = true; }
-async function confirmLogout() { showLogoutModal.value = false; try { await invoke("logout_and_restart"); showNotification("Logged out"); } catch(e) {} }
-async function toggleProxy() { try { if(!proxyRunning.value) { const res = await invoke("start_proxy", { port: Number(proxyPort.value) }); proxyStatus.value = res; proxyRunning.value = true; } else { await invoke("stop_proxy"); proxyStatus.value = "Stopped"; proxyRunning.value = false; } } catch(e) {} }
+async function confirmLogout() { showLogoutModal.value = false; try { await invoke("logout_and_restart"); showNotification("已退出"); } catch(e) {} }
+async function toggleProxy() { try { if(!proxyRunning.value) { const res = await invoke("start_proxy", { port: Number(proxyPort.value) }); proxyStatus.value = res; proxyRunning.value = true; } else { await invoke("stop_proxy"); proxyStatus.value = "已停止"; proxyRunning.value = false; } } catch(e) {} }
 function showNotification(msg) { toastMsg.value = msg; showToast.value = true; setTimeout(() => (showToast.value = false), 3000); }
 
 async function startGmailOAuth() {
     gmailOAuthLoading.value = true;
-    log("Starting Gmail OAuth authorization...");
-    log("A browser window will open. Please log in and authorize access.");
+    log("正在启动 Gmail OAuth 授权...");
+    log("浏览器窗口将打开。请登录并授权访问。");
     try {
         const result = await invoke("gmail_oauth_start");
-        log("OAuth Result: " + result);
-        gmailOAuthStatus.value = "Authenticated";
-        showNotification("Gmail authorized successfully!");
+        log("OAuth 结果: " + result);
+        gmailOAuthStatus.value = "已认证";
+        showNotification("Gmail 授权成功！");
     } catch(e) {
-        log("OAuth Error: " + e);
-        showNotification("OAuth failed: " + e);
+        log("OAuth 错误: " + e);
+        showNotification("OAuth 失败: " + e);
     } finally {
         gmailOAuthLoading.value = false;
     }
@@ -387,7 +415,7 @@ async function checkGmailOAuthStatus() {
     try {
         gmailOAuthStatus.value = await invoke("gmail_oauth_status");
     } catch(e) {
-        gmailOAuthStatus.value = "Error";
+        gmailOAuthStatus.value = "错误";
     }
 }
 
@@ -406,11 +434,11 @@ checkGmailOAuthStatus();
     </Transition>
     <div v-if="showLogoutModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm">
         <div class="bg-white rounded-xl p-6 w-[400px] shadow-2xl">
-            <h3 class="text-lg font-bold mb-2">Add New Identity?</h3>
-            <p class="text-sm text-text-sub mb-6">This will close Orchids and clear the current session.</p>
+            <h3 class="text-lg font-bold mb-2">添加新身份？</h3>
+            <p class="text-sm text-text-sub mb-6">这将关闭 Orchids 并清除当前会话。</p>
             <div class="flex justify-end gap-3">
-                <button @click="showLogoutModal = false" class="px-4 py-2 rounded-lg text-sm font-medium text-text-sub hover:bg-background">Cancel</button>
-                <button @click="confirmLogout" class="px-4 py-2 rounded-lg text-sm font-medium bg-primary text-white hover:bg-primary-hover shadow-lg shadow-primary/30">Continue</button>
+                <button @click="showLogoutModal = false" class="px-4 py-2 rounded-lg text-sm font-medium text-text-sub hover:bg-background">取消</button>
+                <button @click="confirmLogout" class="px-4 py-2 rounded-lg text-sm font-medium bg-primary text-white hover:bg-primary-hover shadow-lg shadow-primary/30">继续</button>
             </div>
         </div>
     </div>
@@ -419,7 +447,7 @@ checkGmailOAuthStatus();
             <h1 class="font-bold text-lg tracking-tight">Orchis</h1>
         </div>
         <nav class="bg-surface rounded-full shadow-sm border border-border p-1 flex items-center gap-1">
-            <button v-for="tab in [{ id: 'dashboard', label: 'Dashboard' }, { id: 'accounts', label: 'All Accounts' }, { id: 'automation', label: 'Automation' }, { id: 'proxy', label: 'API Proxy' }, { id: 'settings', label: 'Settings' }]" 
+            <button v-for="tab in [{ id: 'dashboard', label: '仪表盘' }, { id: 'accounts', label: '所有账号' }, { id: 'automation', label: '自动化' }, { id: 'proxy', label: 'API 代理' }, { id: 'settings', label: '设置' }]" 
             :key="tab.id" @click="activeTab = tab.id" 
             :class="['px-4 py-1.5 rounded-full text-sm font-medium transition-all', activeTab === tab.id ? 'bg-primary/10 text-primary' : 'text-text-sub hover:text-text-main hover:bg-background']">{{ tab.label }}</button>
         </nav>
@@ -435,18 +463,18 @@ checkGmailOAuthStatus();
     <main class="max-w-7xl mx-auto p-6 space-y-6">
         <div v-if="activeTab === 'dashboard'" class="space-y-6 animate-fade-in">
             <div class="flex items-center justify-between">
-                <div><h2 class="text-2xl font-bold flex items-center gap-2">Hello, {{ greetingName }} 👋</h2><p class="text-text-sub text-sm">Welcome back to your identity command center.</p></div>
+                <div><h2 class="text-2xl font-bold flex items-center gap-2">你好, {{ greetingName }} 👋</h2><p class="text-text-sub text-sm">欢迎回到你的身份指挥中心。</p></div>
                 <div class="flex gap-3">
-                    <button @click="addIdentity" class="px-4 py-2 bg-white border border-border rounded-lg text-sm font-medium shadow-sm hover:bg-background flex items-center gap-2 transition-colors"><component :is="Icons.Plus" class="w-4 h-4 text-text-sub" /> Add Account</button>
-                    <button @click="importSession" class="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium shadow-lg shadow-primary/20 hover:bg-primary-hover flex items-center gap-2 transition-colors"><component :is="Icons.Download" class="w-4 h-4" /> Capture Session</button>
+                    <button @click="addIdentity" class="px-4 py-2 bg-white border border-border rounded-lg text-sm font-medium shadow-sm hover:bg-background flex items-center gap-2 transition-colors"><component :is="Icons.Plus" class="w-4 h-4 text-text-sub" /> 添加账号</button>
+                    <button @click="importSession" class="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium shadow-lg shadow-primary/20 hover:bg-primary-hover flex items-center gap-2 transition-colors"><component :is="Icons.Download" class="w-4 h-4" /> 捕获会话</button>
                 </div>
             </div>
             <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div v-for="(stat, idx) in [
-                    { icon: Icons.Users, bg: 'bg-blue-50', color: 'text-blue-500', val: accounts.length, label: 'Total Identities' },
-                    { icon: Icons.Zap, bg: 'bg-emerald-50', color: 'text-emerald-500', val: formatCredits(activeAccount?.user_info?.credits), label: 'Current Balance', sub: 'Active Account', subColor: 'text-emerald-600' },
-                    { icon: Icons.Globe, bg: 'bg-purple-50', color: 'text-purple-500', val: proxyStatus === 'Stopped' ? 'OFF' : 'ON', label: 'API Proxy Status' },
-                    { icon: Icons.Alert, bg: 'bg-orange-50', color: 'text-orange-500', val: '0', label: 'Warnings', sub: 'System Running Smoothly' }
+                    { icon: Icons.Users, bg: 'bg-blue-50', color: 'text-blue-500', val: accounts.length, label: '身份总数' },
+                    { icon: Icons.Zap, bg: 'bg-emerald-50', color: 'text-emerald-500', val: formatCredits(activeAccount?.user_info?.credits), label: '当前余额', sub: '当前账号', subColor: 'text-emerald-600' },
+                    { icon: Icons.Globe, bg: 'bg-purple-50', color: 'text-purple-500', val: proxyStatus === '已停止' ? 'OFF' : 'ON', label: 'API 代理状态' },
+                    { icon: Icons.Star, bg: 'bg-orange-50', color: 'text-orange-500', val: formatCredits(totalCredits), label: '总积分池', sub: '所有账号合计' }
                 ]" :key="idx" class="bg-surface p-5 rounded-xl border border-border shadow-card flex flex-col justify-between h-32 hover:shadow-card-hover transition-shadow">
                     <div :class="['w-8 h-8 rounded-lg flex items-center justify-center mb-2', stat.bg, stat.color]"><component :is="stat.icon" class="w-5 h-5" /></div>
                     <div><h3 class="text-3xl font-bold tracking-tight">{{ stat.val }}</h3><p class="text-xs text-text-sub mt-1">{{ stat.label }}</p><p v-if="stat.sub" :class="['text-[10px] font-medium mt-0.5', stat.subColor || 'text-text-sub']">{{ stat.sub }}</p></div>
@@ -454,7 +482,7 @@ checkGmailOAuthStatus();
             </div>
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div class="bg-surface p-6 rounded-xl border border-border shadow-card h-full flex flex-col">
-                    <h3 class="text-sm font-bold flex items-center gap-2 mb-6"><component :is="Icons.Check" class="w-4 h-4 text-emerald-500" /> Current Account</h3>
+                    <h3 class="text-sm font-bold flex items-center gap-2 mb-6"><component :is="Icons.Check" class="w-4 h-4 text-emerald-500" /> 当前账号</h3>
                     <div v-if="activeAccount" class="flex-1 flex flex-col justify-center">
                         <div class="flex items-center justify-between mb-4">
                             <div><h4 class="text-lg font-bold text-text-main truncate">{{ activeAccount.email }}</h4><p class="text-xs text-text-sub">{{ activeAccount.display_name }}</p></div>
@@ -462,26 +490,26 @@ checkGmailOAuthStatus();
                              <span v-else class="px-2 py-1 rounded bg-gray-100 text-gray-500 border border-gray-200 text-[10px] font-bold">FREE</span>
                         </div>
                         <div class="space-y-4 mb-8">
-                            <div><div class="flex justify-between text-xs mb-1.5"><span class="font-medium text-text-sub">Orchids Credits</span><span class="font-bold text-emerald-600">{{ formatCredits(activeAccount.user_info?.credits) }}</span></div><div class="h-2 w-full bg-background rounded-full overflow-hidden border border-border"><div class="h-full bg-emerald-500 rounded-full" :style="{ width: Math.min((activeAccount.user_info?.credits || 0) / 500000 * 100, 100) + '%' }"></div></div></div>
-                            <div><div class="flex justify-between text-xs mb-1.5"><span class="font-medium text-text-sub">Session Health</span><span class="font-bold text-primary">100%</span></div><div class="h-2 w-full bg-background rounded-full overflow-hidden border border-border"><div class="h-full bg-primary rounded-full" style="width: 100%"></div></div></div>
+                            <div><div class="flex justify-between text-xs mb-1.5"><span class="font-medium text-text-sub">Orchids 积分</span><span class="font-bold text-emerald-600">{{ formatCredits(activeAccount.user_info?.credits) }}</span></div><div class="h-2 w-full bg-background rounded-full overflow-hidden border border-border"><div class="h-full bg-emerald-500 rounded-full" :style="{ width: Math.min((activeAccount.user_info?.credits || 0) / 500000 * 100, 100) + '%' }"></div></div></div>
+                            <div><div class="flex justify-between text-xs mb-1.5"><span class="font-medium text-text-sub">会话健康度</span><span class="font-bold text-primary">100%</span></div><div class="h-2 w-full bg-background rounded-full overflow-hidden border border-border"><div class="h-full bg-primary rounded-full" style="width: 100%"></div></div></div>
                         </div>
-                        <button @click="showLogoutModal = true" class="w-full py-2.5 border border-border rounded-lg text-sm font-medium text-text-sub hover:text-text-main hover:bg-background transition-colors">Change Account</button>
+                        <button @click="showLogoutModal = true" class="w-full py-2.5 border border-border rounded-lg text-sm font-medium text-text-sub hover:text-text-main hover:bg-background transition-colors">切换账号</button>
                     </div>
-                    <div v-else class="flex-1 flex items-center justify-center text-text-sub text-sm">No active session detected.</div>
+                    <div v-else class="flex-1 flex items-center justify-center text-text-sub text-sm">未检测到活跃会话。</div>
                 </div>
                 <div class="bg-surface p-6 rounded-xl border border-border shadow-card h-full flex flex-col">
-                    <h3 class="text-sm font-bold flex items-center gap-2 mb-6"><component :is="Icons.Star" class="w-4 h-4 text-primary" /> Recommended</h3>
+                    <h3 class="text-sm font-bold flex items-center gap-2 mb-6"><component :is="Icons.Star" class="w-4 h-4 text-primary" /> 推荐账号</h3>
                     <div v-if="recommendAccounts.length > 0" class="space-y-3 max-h-[320px] overflow-y-auto pr-2 custom-scrollbar">
                         <div v-for="account in recommendAccounts" :key="account.id" class="p-4 bg-background border border-border rounded-lg flex items-center justify-between hover:border-primary/30 transition-colors cursor-pointer group flex-shrink-0" @click="setActive(account.id)">
-                             <div><p class="text-[10px] font-bold text-text-sub uppercase mb-0.5 tracking-wider">Best for Credits</p><p class="text-sm font-medium text-text-main group-hover:text-primary transition-colors">{{ account.email }}</p></div>
+                             <div><p class="text-[10px] font-bold text-text-sub uppercase mb-0.5 tracking-wider">最佳积分</p><p class="text-sm font-medium text-text-main group-hover:text-primary transition-colors">{{ account.email }}</p></div>
                              <div class="px-2 py-1 rounded bg-emerald-100 text-emerald-700 text-xs font-bold whitespace-nowrap">{{ formatCredits(account.user_info?.credits) }}</div>
                         </div>
-                        <button @click="setActive(recommendAccounts[0].id)" class="w-full mt-4 py-2.5 bg-primary text-white rounded-lg text-sm font-bold shadow-lg shadow-primary/20 hover:bg-primary-hover transition-colors flex-shrink-0 sticky bottom-0 z-10">Switch to Best Account</button>
+                        <button @click="setActive(recommendAccounts[0].id)" class="w-full mt-4 py-2.5 bg-primary text-white rounded-lg text-sm font-bold shadow-lg shadow-primary/20 hover:bg-primary-hover transition-colors flex-shrink-0 sticky bottom-0 z-10">切换至最佳账号</button>
                     </div>
-                    <div v-else class="flex-1 flex items-center justify-center text-text-sub text-sm">Add more accounts to see recommendations.</div>
+                    <div v-else class="flex-1 flex items-center justify-center text-text-sub text-sm">添加更多账号以查看推荐。</div>
                 </div>
             </div>
-            <button @click="activeTab = 'accounts'" class="w-full py-3 bg-white border border-border text-text-main font-medium rounded-xl hover:bg-background transition-colors flex items-center justify-center gap-2 shadow-sm">View All Accounts <span class="text-lg leading-none transform translate-y-px">→</span></button>
+            <button @click="activeTab = 'accounts'" class="w-full py-3 bg-white border border-border text-text-main font-medium rounded-xl hover:bg-background transition-colors flex items-center justify-center gap-2 shadow-sm">查看所有账号 <span class="text-lg leading-none transform translate-y-px">→</span></button>
         </div>
         <div v-if="activeTab === 'accounts'" class="space-y-6 animate-fade-in">
              <div class="bg-surface border border-border rounded-xl shadow-sm overflow-hidden">
@@ -489,13 +517,20 @@ checkGmailOAuthStatus();
                     <table class="w-full text-left border-collapse">
                         <thead>
                             <tr class="bg-background border-b border-border text-xs uppercase text-text-sub font-semibold tracking-wider">
-                                <th class="px-6 py-4">Identity</th>
-                                <th class="px-6 py-4">Credits</th>
-                                <th class="px-6 py-4">Plan</th>
-                                <th class="px-6 py-4 text-right">Actions</th>
+                                <th class="px-6 py-4">身份</th>
+                                <th class="px-6 py-4">积分</th>
+                                <th class="px-6 py-4">计划</th>
+                                <th class="px-6 py-4 text-right">操作</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-border">
+                            <!-- Total Row -->
+                            <tr class="bg-surface/50 font-bold text-text-main">
+                                <td class="px-6 py-3 text-right text-xs uppercase tracking-wider text-text-sub">总计</td>
+                                <td class="px-6 py-3 text-sm text-emerald-600">{{ formatCredits(totalCredits) }}</td>
+                                <td class="px-6 py-3 text-center text-xs text-text-sub">{{ accounts.length }} 个账号</td>
+                                <td class="px-6 py-3"></td>
+                            </tr>
                             <tr v-for="account in accounts" :key="account.id" @click="setActive(account.id)" class="group cursor-pointer hover:bg-background transition-colors">
                                 <td class="px-6 py-4">
                                     <div class="flex items-center gap-3">
@@ -505,7 +540,7 @@ checkGmailOAuthStatus();
                                         <div>
                                             <div class="flex items-center gap-2">
                                                 <h4 class="font-bold text-sm text-text-main">{{ account.display_name }}</h4>
-                                                <span v-if="activeAccountId === account.id" class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-bold">ACTIVE</span>
+                                                <span v-if="activeAccountId === account.id" class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-bold">活跃</span>
                                             </div>
                                             <p class="text-xs text-text-sub">{{ account.email }}</p>
                                         </div>
@@ -532,7 +567,7 @@ checkGmailOAuthStatus();
                         </tbody>
                     </table>
                  </div>
-                 <div v-if="accounts.length === 0" class="p-12 text-center text-text-sub text-sm">No accounts found. Add one to get started.</div>
+                 <div v-if="accounts.length === 0" class="p-12 text-center text-text-sub text-sm">未找到账号。请添加一个以开始。</div>
              </div>
         </div>
 
@@ -540,7 +575,7 @@ checkGmailOAuthStatus();
         <div v-if="showImapSettings" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in" @click.self="showImapSettings = false">
             <div class="bg-surface w-full max-w-md rounded-2xl shadow-2xl border border-border overflow-hidden flex flex-col max-h-[80vh]">
                 <div class="p-4 border-b border-border flex justify-between items-center bg-background/50">
-                    <h3 class="font-bold text-lg flex items-center gap-2"><component :is="Icons.Settings" class="w-5 h-5 text-text-sub"/> Email Profiles</h3>
+                    <h3 class="font-bold text-lg flex items-center gap-2"><component :is="Icons.Settings" class="w-5 h-5 text-text-sub"/> 邮箱配置</h3>
                     <button @click="showImapSettings = false" class="text-text-sub hover:text-text-main"><component :is="Icons.Close" class="w-5 h-5"/></button>
                 </div>
                 
@@ -548,30 +583,30 @@ checkGmailOAuthStatus();
                     <!-- Add New / Edit Form -->
                     <div v-if="isEditingProfile" class="bg-background border border-border rounded-xl p-4 space-y-3">
                         <div class="flex justify-between items-center mb-2">
-                            <h4 class="font-bold text-xs uppercase text-primary">{{ editingProfile.id ? 'Edit Profile' : 'New Profile' }}</h4>
+                            <h4 class="font-bold text-xs uppercase text-primary">{{ editingProfile.id ? '编辑配置' : '新配置' }}</h4>
                             <div class="flex gap-2" v-if="!editingProfile.id">
                                 <button @click="applyPreset('gmail')" class="text-[10px] px-2 py-1 bg-gray-100 rounded hover:bg-gray-200 text-gray-600">Gmail</button>
                                 <button @click="applyPreset('qq')" class="text-[10px] px-2 py-1 bg-gray-100 rounded hover:bg-gray-200 text-gray-600">QQ</button>
                                 <button @click="applyPreset('163')" class="text-[10px] px-2 py-1 bg-gray-100 rounded hover:bg-gray-200 text-gray-600">163</button>
                             </div>
                         </div>
-                        <div><label class="text-[10px] font-bold text-text-sub mb-1 block">PROFILE NAME</label><input v-model="editingProfile.name" class="w-full px-3 py-2 bg-white border border-border rounded-lg text-xs" placeholder="e.g. My Primary Gmail"></div>
+                        <div><label class="text-[10px] font-bold text-text-sub mb-1 block">配置名称</label><input v-model="editingProfile.name" class="w-full px-3 py-2 bg-white border border-border rounded-lg text-xs" placeholder="例如：我的主力 Gmail"></div>
                         <div class="flex gap-3">
-                            <div class="flex-1"><label class="text-[10px] font-bold text-text-sub mb-1 block">HOST</label><input v-model="editingProfile.host" class="w-full px-3 py-2 bg-white border border-border rounded-lg text-xs"></div>
-                            <div class="w-20"><label class="text-[10px] font-bold text-text-sub mb-1 block">PORT</label><input v-model="editingProfile.port" type="number" class="w-full px-3 py-2 bg-white border border-border rounded-lg text-xs"></div>
+                            <div class="flex-1"><label class="text-[10px] font-bold text-text-sub mb-1 block">主机 (Host)</label><input v-model="editingProfile.host" class="w-full px-3 py-2 bg-white border border-border rounded-lg text-xs"></div>
+                            <div class="w-20"><label class="text-[10px] font-bold text-text-sub mb-1 block">端口 (Port)</label><input v-model="editingProfile.port" type="number" class="w-full px-3 py-2 bg-white border border-border rounded-lg text-xs"></div>
                         </div>
-                        <div><label class="text-[10px] font-bold text-text-sub mb-1 block">EMAIL (USER)</label><input v-model="editingProfile.user" class="w-full px-3 py-2 bg-white border border-border rounded-lg text-xs"></div>
-                        <div><label class="text-[10px] font-bold text-text-sub mb-1 block">PASSWORD / APP KEY</label><input v-model="editingProfile.pass" type="password" class="w-full px-3 py-2 bg-white border border-border rounded-lg text-xs"></div>
+                        <div><label class="text-[10px] font-bold text-text-sub mb-1 block">邮箱 (用户名)</label><input v-model="editingProfile.user" class="w-full px-3 py-2 bg-white border border-border rounded-lg text-xs"></div>
+                        <div><label class="text-[10px] font-bold text-text-sub mb-1 block">密码 / 应用专用密码</label><input v-model="editingProfile.pass" type="password" class="w-full px-3 py-2 bg-white border border-border rounded-lg text-xs"></div>
                         <div class="flex gap-2 pt-2">
-                            <button @click="saveProfile" class="flex-1 py-2 bg-primary text-white rounded-lg text-xs font-bold hover:bg-primary-hover">Save Profile</button>
-                            <button @click="cancelEdit" class="px-4 py-2 bg-gray-100 text-text-sub rounded-lg text-xs font-bold hover:bg-gray-200">Cancel</button>
+                            <button @click="saveProfile" class="flex-1 py-2 bg-primary text-white rounded-lg text-xs font-bold hover:bg-primary-hover">保存配置</button>
+                            <button @click="cancelEdit" class="px-4 py-2 bg-gray-100 text-text-sub rounded-lg text-xs font-bold hover:bg-gray-200">取消</button>
                         </div>
                     </div>
 
                     <!-- Profile List -->
                     <div v-else class="space-y-3">
                          <button @click="startNewProfile" class="w-full py-3 border border-dashed border-border rounded-xl text-text-sub text-xs font-bold hover:bg-background hover:text-primary transition-colors flex items-center justify-center gap-2">
-                            <component :is="Icons.Plus" class="w-4 h-4"/> Add New Profile
+                            <component :is="Icons.Plus" class="w-4 h-4"/> 添加新配置
                          </button>
                          <div v-for="p in imapProfiles" :key="p.id" class="p-3 bg-white border border-border rounded-xl flex justify-between items-center hover:shadow-sm transition-shadow group">
                              <div @click="selectProfile(p)" class="flex-1 cursor-pointer">
@@ -589,76 +624,70 @@ checkGmailOAuthStatus();
             </div>
         </div>
 
+        <!-- Email Domain Manager Modal -->
+        <div v-if="showDomainManager" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in" @click.self="showDomainManager = false">
+            <div class="bg-surface p-6 rounded-xl border border-border shadow-card w-full max-w-md">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-bold">邮箱域名</h3>
+                    <button @click="showDomainManager = false" class="text-text-sub hover:text-text-main"><component :is="Icons.Close" class="w-5 h-5"/></button>
+                </div>
+                <p class="text-sm text-text-sub mb-4">管理自定义邮箱域名。Gmail 是默认项，无法移除。</p>
+                
+                <!-- Add New Domain -->
+                <div class="flex gap-2 mb-4">
+                    <input v-model="newDomain" @keyup.enter="addEmailDomain" type="text" class="flex-1 px-3 py-2 bg-background border border-border rounded-lg text-sm" placeholder="@yourdomain.com">
+                    <button @click="addEmailDomain" class="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary-dark">添加</button>
+                </div>
+                
+                <!-- Domain List -->
+                <div class="space-y-2 max-h-60 overflow-y-auto">
+                    <div v-for="domain in emailDomains" :key="domain" class="flex items-center justify-between p-3 bg-background rounded-lg border border-border">
+                        <span class="text-sm font-medium">{{ domain }}</span>
+                        <button v-if="domain !== '@gmail.com'" @click="removeEmailDomain(domain)" class="text-red-500 hover:text-red-600">
+                            <component :is="Icons.Trash" class="w-4 h-4"/>
+                        </button>
+                        <span v-else class="text-xs text-text-sub">默认</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div v-if="activeTab === 'automation'" class="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-fade-in h-[calc(100vh-140px)]">
             <div class="bg-surface p-6 rounded-xl border border-border shadow-card flex flex-col gap-6">
-                <div><h2 class="text-lg font-bold">Bot Configuration</h2><p class="text-sm text-text-sub">Configure login/registration automation (via Background API).</p></div>
+                <div><h2 class="text-lg font-bold">机器人配置</h2><p class="text-sm text-text-sub">配置登录/注册自动化 (通过后台 API)。</p></div>
                 <div class="space-y-4">
                     <div class="flex gap-4 p-1 bg-background border border-border rounded-lg">
-                        <button @click="autoMode = 'login'" :class="['flex-1 py-2 text-sm font-medium rounded-md transition-all', autoMode === 'login' ? 'bg-white shadow-sm text-text-main' : 'text-text-sub hover:text-text-main']">Login</button>
-                        <button @click="autoMode = 'register'" :class="['flex-1 py-2 text-sm font-medium rounded-md transition-all', autoMode === 'register' ? 'bg-white shadow-sm text-text-main' : 'text-text-sub hover:text-text-main']">Register</button>
+                        <button @click="autoMode = 'login'" :class="['flex-1 py-2 text-sm font-medium rounded-md transition-all', autoMode === 'login' ? 'bg-white shadow-sm text-text-main' : 'text-text-sub hover:text-text-main']">登录</button>
+                        <button @click="autoMode = 'register'" :class="['flex-1 py-2 text-sm font-medium rounded-md transition-all', autoMode === 'register' ? 'bg-white shadow-sm text-text-main' : 'text-text-sub hover:text-text-main']">注册</button>
                     </div>
                 <!-- Automation Inputs -->
                     <div>
-                        <div class="flex justify-between">
-                            <label class="text-xs font-bold text-text-sub mb-1 block">Target Email</label>
-                            <button @click="fillTestData" :disabled="emailSuffix !== '@huaan666.site'" :class="['text-[10px] font-bold transition-colors', emailSuffix === '@huaan666.site' ? 'text-primary hover:underline' : 'text-gray-300 cursor-not-allowed']">Autofill</button>
+                        <div class="flex justify-between items-center">
+                            <label class="text-xs font-bold text-text-sub mb-1 block">目标邮箱</label>
+                            <div class="flex gap-2">
+                                <button @click="showDomainManager = true" class="text-[10px] font-bold text-primary hover:underline">管理域名</button>
+                                <button @click="fillTestData" :disabled="emailSuffix === '@gmail.com'" :class="['text-[10px] font-bold transition-colors', emailSuffix !== '@gmail.com' ? 'text-primary hover:underline' : 'text-gray-300 cursor-not-allowed']">自动填充</button>
+                            </div>
                         </div>
                         <div class="flex gap-2">
                              <input v-model="emailPrefix" @input="updateAutoEmail" type="text" class="flex-1 px-3 py-2 bg-background border border-border rounded-lg text-sm" placeholder="username">
                              <select v-model="emailSuffix" @change="updateAutoEmail" class="w-40 px-3 py-2 bg-background border border-border rounded-lg text-sm text-text-main cursor-pointer appearance-none">
-                                 <option value="@huaan666.site">@huaan666.site</option>
-                                 <option value="@qq.com">@qq.com</option>
-                                 <option value="@gmail.com">@gmail.com</option>
-                                 <option value="@custom">Custom...</option>
+                                 <option v-for="domain in emailDomains" :key="domain" :value="domain">{{ domain }}</option>
                              </select>
                         </div>
-                        <div v-if="isCustomSuffix" class="mt-2">
-                             <input v-model="customSuffix" @input="updateAutoEmail" type="text" class="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm" placeholder="@yourdomain.com">
-                        </div>
-                        <!-- Hidden full email for logic compatibility if needed, or we just rely on autoEmail being updated -->
                     </div>
-                    <div><label class="text-xs font-bold text-text-sub mb-1 block">Target Password</label><input v-model="autoPass" type="password" class="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm" placeholder="Password for account"></div>
+                    <div><label class="text-xs font-bold text-text-sub mb-1 block">目标密码</label><input v-model="autoPass" type="password" class="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm" placeholder="账号密码"></div>
 
-                    <!-- IMAP SECTION -->
+                    <!-- Gmail OAuth Section -->
                     <div class="pt-4 border-t border-border mt-4">
-                        <div class="flex items-center justify-between mb-3">
-                            <h3 class="text-xs font-bold text-text-sub uppercase flex items-center gap-2"><component :is="Icons.Globe" class="w-3 h-3"/> IMAP Configuration</h3>
-                             <button @click="showImapSettings = true" class="text-[10px] bg-primary/10 text-primary px-2 py-1 rounded hover:bg-primary/20 font-bold flex items-center gap-1">
-                                <component :is="Icons.Settings" class="w-3 h-3"/> Manage Profiles
-                             </button>
-                        </div>
-                        
-                        <!-- Quick Profile Selector -->
-                        <div class="mb-3">
-                            <select v-model="selectedProfileId" @change="applyProfileById($event.target.value)" class="w-full px-3 py-2 bg-background border border-border rounded-lg text-xs text-text-main font-medium cursor-pointer">
-                                <option value="" disabled selected>Select an Email Profile...</option>
-                                <option v-for="p in imapProfiles" :key="p.id" :value="p.id">{{ p.name }} ({{ p.user }})</option>
-                            </select>
-                            <div v-if="imapProfiles.length === 0" class="mt-2 text-center">
-                                <span class="text-[10px] text-text-sub">No profiles found. </span>
-                                <button @click="showImapSettings = true" class="text-[10px] text-primary font-bold hover:underline">Create One</button>
-                            </div>
-                        </div>
-
-                        <!-- Active Config Summary -->
-                        <div v-if="imapHost" class="p-3 bg-background border border-border rounded-lg flex items-center gap-3">
-                            <div class="w-8 h-8 rounded-full bg-surface border border-border flex items-center justify-center text-text-sub"><component :is="Icons.Check" class="w-4 h-4 text-emerald-500"/></div>
-                            <div>
-                                <div class="text-[10px] font-bold text-text-sub uppercase">Ready to Check</div>
-                                <div class="text-xs font-medium text-text-main truncate max-w-[200px]">{{ imapUser || 'No User Set' }}</div>
-                                <div class="text-[10px] text-text-sub">{{ imapHost }}:{{ imapPort }}</div>
-                            </div>
-                        </div>
-                        
-                        <!-- Gmail OAuth Button -->
-                        <div class="mt-3 p-3 bg-gradient-to-r from-red-50 to-orange-50 border border-red-200 rounded-lg">
+                        <div class="p-4 bg-gradient-to-r from-red-50 to-orange-50 border border-red-200 rounded-lg">
                             <div class="flex items-center justify-between">
                                 <div>
-                                    <div class="text-xs font-bold text-red-700">Gmail OAuth 2.0</div>
-                                    <div class="text-[10px] text-red-600">{{ gmailOAuthStatus }}</div>
+                                    <div class="text-sm font-bold text-red-700">Gmail OAuth 2.0</div>
+                                    <div class="text-xs text-red-600">{{ gmailOAuthStatus }}</div>
                                 </div>
-                                <button @click="startGmailOAuth" :disabled="gmailOAuthLoading" class="px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-xs font-bold rounded-lg shadow transition-colors disabled:opacity-50">
-                                    {{ gmailOAuthLoading ? 'Authorizing...' : (gmailOAuthStatus === 'Authenticated' ? '✓ Connected' : 'Authorize Gmail') }}
+                                <button @click="startGmailOAuth" :disabled="gmailOAuthLoading" class="px-4 py-2 bg-red-500 hover:bg-red-600 text-white text-sm font-bold rounded-lg shadow transition-colors disabled:opacity-50">
+                                    {{ gmailOAuthLoading ? '正在授权...' : (gmailOAuthStatus === '已认证' ? '✓ 已连接' : '授权 Gmail') }}
                                 </button>
                             </div>
                         </div>
@@ -668,7 +697,7 @@ checkGmailOAuthStatus();
                 </div>
                 <div class="mt-auto">
                     <button @click="startAutomation" :disabled="autoRunning" :class="['w-full py-3 rounded-lg text-white font-bold shadow-lg transition-all flex items-center justify-center gap-2', autoRunning ? 'bg-gray-400 cursor-not-allowed' : 'bg-primary hover:bg-primary-hover']">
-                        <component :is="autoRunning ? Icons.Stop : Icons.Play" class="w-4 h-4" /> {{ autoRunning ? 'Running...' : 'Start Job' }}
+                        <component :is="autoRunning ? Icons.Stop : Icons.Play" class="w-4 h-4" /> {{ autoRunning ? '运行中...' : '开始任务' }}
                     </button>
                 </div>
             </div>
@@ -676,17 +705,20 @@ checkGmailOAuthStatus();
             <!-- Console Output Panel -->
             <div class="bg-black/90 p-6 rounded-xl border border-gray-800 shadow-card flex flex-col font-mono text-xs">
                 <div class="flex items-center justify-between mb-4 border-b border-gray-800 pb-2">
-                    <h3 class="font-bold text-gray-400 flex items-center gap-2"><component :is="Icons.Terminal" class="w-4 h-4"/> Console Output</h3>
-                    <button @click="autoLogs = []" class="text-gray-600 hover:text-gray-400">Clear</button>
+                    <h3 class="font-bold text-gray-400 flex items-center gap-2"><component :is="Icons.Terminal" class="w-4 h-4"/> 控制台输出</h3>
+                    <button @click="autoLogs = []" class="text-gray-600 hover:text-gray-400">清除</button>
                 </div>
                 <div class="flex-1 overflow-y-auto space-y-1 custom-scrollbar pr-2">
                     <div v-for="(log, i) in autoLogs" :key="i" class="text-emerald-500">{{ log }}</div>
-                    <div v-if="autoLogs.length === 0" class="text-gray-700 italic">Ready for tasks...</div>
+                    <div v-if="autoLogs.length === 0" class="text-gray-700 italic">准备就绪...</div>
                 </div>
             </div>
         </div>
-        <div v-if="activeTab === 'proxy'" class="max-w-2xl mx-auto bg-surface p-8 rounded-xl border border-border shadow-card animate-fade-in"><h2 class="text-xl font-bold mb-6">API Proxy Configuration</h2><div class="space-y-4"><input v-model="proxyPort" type="number" class="w-full border border-border rounded-lg px-4 py-2" placeholder="Port" :disabled="proxyRunning"><button @click="toggleProxy" :class="['w-full py-2.5 font-bold rounded-lg text-white shadow-lg transition-colors', proxyRunning ? 'bg-red-500 hover:bg-red-600' : 'bg-primary hover:bg-primary-hover']">{{ proxyRunning ? 'Stop Server' : 'Start Server' }}</button></div></div>
-        <div v-if="activeTab === 'settings'" class="max-w-2xl mx-auto bg-surface p-8 rounded-xl border border-border shadow-card animate-fade-in"><h2 class="text-xl font-bold mb-6">Settings</h2><p class="text-sm text-text-sub">Version 0.1.0 dev</p></div>
+        <div v-if="activeTab === 'proxy'" class="max-w-2xl mx-auto bg-surface p-8 rounded-xl border border-border shadow-card animate-fade-in"><h2 class="text-xl font-bold mb-6">API 代理配置</h2><div class="space-y-4"><input v-model="proxyPort" type="number" class="w-full border border-border rounded-lg px-4 py-2" placeholder="端口" :disabled="proxyRunning"><button @click="toggleProxy" :class="['w-full py-2.5 font-bold rounded-lg text-white shadow-lg transition-colors', proxyRunning ? 'bg-red-500 hover:bg-red-600' : 'bg-primary hover:bg-primary-hover']">{{ proxyRunning ? '停止服务器' : '启动服务器' }}</button></div></div>
+        <div v-if="activeTab === 'settings'" class="max-w-2xl mx-auto bg-surface p-8 rounded-xl border border-border shadow-card animate-fade-in">
+            <h2 class="text-xl font-bold mb-6">设置</h2>
+            <p class="text-sm text-text-sub">版本 0.1.0 dev</p>
+        </div>
     </main>
   </div>
 </template>

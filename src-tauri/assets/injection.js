@@ -30,22 +30,26 @@
   let isDebouncing = false;
 
   // --- CAPTURE LOGIC ---
-  function setupSessionCapture() {
-    const ses = session.defaultSession;
-    if (!ses) return;
+  async function checkCurrentSession() {
+      const ses = session.defaultSession;
+      if (!ses) return;
+      
+      try {
+          const cookies = await ses.cookies.get({ name: '__session' });
+          if (cookies.length > 0) {
+              log('Initial check: Found existng __session cookie, triggering capture');
+              processCookieCapture(ses);
+          }
+      } catch (e) {
+          log('Initial check failed: ' + e.message);
+      }
+  }
 
-    ses.cookies.on('changed', (event, cookie, cause, removed) => {
-      // log(`Cookie change: ${cookie.name} (cause: ${cause}, removed: ${removed})`); // verbose
-      
-      // Only care about session cookie being added/updated
-      if (removed || cookie.name !== '__session') return;
-      
-      log('Detected __session cookie change!');
-      
+  async function processCookieCapture(ses) {
       if (isDebouncing) return;
       isDebouncing = true;
 
-      // Wait 3 seconds for other cookies (client_uat, etc) to settle
+      // Wait 1 second for other cookies (client_uat, etc) to settle
       setTimeout(async () => {
         try {
           // Double check if we still have the session
@@ -142,7 +146,22 @@
         } finally {
             isDebouncing = false;
         }
-      }, 3000);
+      }, 1000);
+  }
+
+  function setupSessionCapture() {
+    const ses = session.defaultSession;
+    if (!ses) return;
+
+    // Check immediately
+    checkCurrentSession();
+
+    ses.cookies.on('changed', (event, cookie, cause, removed) => {
+      // Only care about session cookie being added/updated
+      if (removed || cookie.name !== '__session') return;
+      
+      log('Detected __session cookie change!');
+      processCookieCapture(ses);
     });
   }
 

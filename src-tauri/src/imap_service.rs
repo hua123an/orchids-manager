@@ -10,22 +10,21 @@ pub fn fetch_verification_code(
     let tls = TlsConnector::builder().build().map_err(|e| e.to_string())?;
 
     // Connect (IMAP over SSL/TLS)
-    let client =
-        imap::connect((host, port), host, &tls).map_err(|e| format!("Connection failed: {}", e))?;
+    let client = imap::connect((host, port), host, &tls).map_err(|e| format!("连接失败: {}", e))?;
 
     // Login
     let mut session = client
         .login(user, pass)
-        .map_err(|e| format!("Login failed: {}", e.0))?;
+        .map_err(|e| format!("登录失败: {}", e.0))?;
 
     // Select INBOX and get count
     let mailbox = session
         .select("INBOX")
-        .map_err(|e| format!("Failed to select INBOX: {}", e))?;
+        .map_err(|e| format!("选择收件箱失败: {}", e))?;
     let last_seq = mailbox.exists;
 
     if last_seq == 0 {
-        return Err("Inbox is empty".to_string());
+        return Err("收件箱为空".to_string());
     }
 
     // Fetch last 3 messages
@@ -34,7 +33,7 @@ pub fn fetch_verification_code(
 
     let messages = session
         .fetch(fetch_range, "RFC822.TEXT") // Fetch Body text only
-        .map_err(|e| format!("Fetch failed: {}", e))?;
+        .map_err(|e| format!("获取邮件失败: {}", e))?;
 
     let re = Regex::new(r"\b\d{6}\b").map_err(|e| e.to_string())?;
 
@@ -58,7 +57,7 @@ pub fn fetch_verification_code(
         }
     }
 
-    Err("No 6-digit code found in recent emails".to_string())
+    Err("近期邮件中未找到 6 位验证码".to_string())
 }
 
 /// Fetch verification code using OAuth2 (for Gmail)
@@ -73,11 +72,11 @@ pub fn fetch_verification_code_oauth(
     let tls = TlsConnector::builder().build().map_err(|e| e.to_string())?;
 
     // Connect to Gmail IMAP directly (relies on system proxy/TUN)
-    let stream = TcpStream::connect("imap.gmail.com:993")
-        .map_err(|e| format!("TCP connect failed: {}", e))?;
+    let stream =
+        TcpStream::connect("imap.gmail.com:993").map_err(|e| format!("TCP 连接失败: {}", e))?;
     let mut tls_stream = tls
         .connect("imap.gmail.com", stream)
-        .map_err(|e| format!("TLS connect failed: {}", e))?;
+        .map_err(|e| format!("TLS 连接失败: {}", e))?;
 
     // Read greeting
     let mut buf = [0u8; 4096];
@@ -101,7 +100,7 @@ pub fn fetch_verification_code_oauth(
     let response = String::from_utf8_lossy(&buf[..n]);
 
     if !response.contains("A1 OK") {
-        return Err(format!("XOAUTH2 auth failed: {}", response));
+        return Err(format!("XOAUTH2 认证失败: {}", response));
     }
 
     // Select INBOX
@@ -121,7 +120,7 @@ pub fn fetch_verification_code_oauth(
         .unwrap_or(0);
 
     if exists == 0 {
-        return Err("Inbox is empty".to_string());
+        return Err("收件箱为空".to_string());
     }
 
     // Fetch last 3 messages
@@ -168,5 +167,5 @@ pub fn fetch_verification_code_oauth(
     // Logout
     tls_stream.write_all(b"A4 LOGOUT\r\n").ok();
 
-    Err("No 6-digit code found in recent emails".to_string())
+    Err("近期邮件中未找到 6 位验证码".to_string())
 }

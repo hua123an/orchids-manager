@@ -82,24 +82,24 @@ pub fn start_oauth_flow() -> Result<OAuthTokens, String> {
     let auth_url = get_auth_url();
 
     // Open browser
-    open::that(&auth_url).map_err(|e| format!("Failed to open browser: {}", e))?;
+    open::that(&auth_url).map_err(|e| format!("打开浏览器失败: {}", e))?;
 
     // Start local server to receive callback
-    let listener = TcpListener::bind("127.0.0.1:8085")
-        .map_err(|e| format!("Failed to start callback server: {}", e))?;
+    let listener =
+        TcpListener::bind("127.0.0.1:8085").map_err(|e| format!("启动回调服务器失败: {}", e))?;
 
     println!("Waiting for OAuth callback on http://127.0.0.1:8085 ...");
 
     // Accept one connection
     let (mut stream, _) = listener
         .accept()
-        .map_err(|e| format!("Failed to accept connection: {}", e))?;
+        .map_err(|e| format!("接受连接失败: {}", e))?;
 
     let mut reader = BufReader::new(&stream);
     let mut request_line = String::new();
     reader
         .read_line(&mut request_line)
-        .map_err(|e| format!("Failed to read request: {}", e))?;
+        .map_err(|e| format!("读取请求失败: {}", e))?;
 
     // Parse the authorization code from the request
     // Example: GET /?code=4/0AfJoh...&scope=... HTTP/1.1
@@ -108,8 +108,8 @@ pub fn start_oauth_flow() -> Result<OAuthTokens, String> {
     // Send success response to browser
     let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n\
         <html><body style='font-family: sans-serif; text-align: center; padding: 50px;'>\
-        <h1>✅ Authorization Successful!</h1>\
-        <p>You can close this window and return to the app.</p>\
+        <h1>✅ 授权成功！</h1>\
+        <p>您可以关闭此窗口并返回应用。</p>\
         </body></html>";
     stream.write_all(response.as_bytes()).ok();
 
@@ -126,7 +126,7 @@ fn extract_code_from_request(request: &str) -> Result<String, String> {
     // Parse: GET /?code=XXX&scope=... HTTP/1.1
     let parts: Vec<&str> = request.split_whitespace().collect();
     if parts.len() < 2 {
-        return Err("Invalid request format".to_string());
+        return Err("无效的请求格式".to_string());
     }
 
     let path = parts[1];
@@ -138,11 +138,11 @@ fn extract_code_from_request(request: &str) -> Result<String, String> {
             return Ok(value.to_string());
         }
         if key == "error" {
-            return Err(format!("OAuth error: {}", value));
+            return Err(format!("OAuth 错误: {}", value));
         }
     }
 
-    Err("No authorization code found".to_string())
+    Err("未找到授权码".to_string())
 }
 
 fn exchange_code_for_tokens(code: &str) -> Result<OAuthTokens, String> {
@@ -162,17 +162,17 @@ fn exchange_code_for_tokens(code: &str) -> Result<OAuthTokens, String> {
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(body)
         .send()
-        .map_err(|e| format!("Token request failed: {}", e))?;
+        .map_err(|e| format!("令牌请求失败: {}", e))?;
 
     let status = response.status();
     let body_text = response.text().map_err(|e: reqwest::Error| e.to_string())?;
 
     if !status.is_success() {
-        return Err(format!("Token exchange failed: {}", body_text));
+        return Err(format!("令牌交换失败: {}", body_text));
     }
 
     let tokens: OAuthTokens = serde_json::from_str(&body_text)
-        .map_err(|e| format!("Failed to parse tokens: {} - Body: {}", e, body_text))?;
+        .map_err(|e| format!("解析令牌失败: {} - 内容: {}", e, body_text))?;
 
     Ok(tokens)
 }
@@ -193,17 +193,17 @@ pub fn refresh_access_token(refresh_token: &str) -> Result<OAuthTokens, String> 
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(body)
         .send()
-        .map_err(|e| format!("Token refresh failed: {}", e))?;
+        .map_err(|e| format!("令牌刷新失败: {}", e))?;
 
     let status = response.status();
     let body_text = response.text().map_err(|e: reqwest::Error| e.to_string())?;
 
     if !status.is_success() {
-        return Err(format!("Token refresh failed: {}", body_text));
+        return Err(format!("令牌刷新失败: {}", body_text));
     }
 
     let mut tokens: OAuthTokens =
-        serde_json::from_str(&body_text).map_err(|e| format!("Failed to parse tokens: {}", e))?;
+        serde_json::from_str(&body_text).map_err(|e| format!("解析令牌失败: {}", e))?;
 
     // Refresh response doesn't include refresh_token, keep the old one
     if tokens.refresh_token.is_none() {
@@ -269,17 +269,16 @@ pub fn fetch_verification_code_api(app: &AppHandle, min_timestamp: i64) -> Resul
         .get(url)
         .header("Authorization", format!("Bearer {}", token))
         .send()
-        .map_err(|e| format!("API list failed: {}", e))?;
+        .map_err(|e| format!("API 列表获取失败: {}", e))?;
 
     if !res.status().is_success() {
-        return Err(format!("API list error: {}", res.status()));
+        return Err(format!("API 列表错误: {}", res.status()));
     }
 
-    let list_response: MessageListResponse = res
-        .json()
-        .map_err(|e| format!("Parse list failed: {}", e))?;
+    let list_response: MessageListResponse =
+        res.json().map_err(|e| format!("解析列表失败: {}", e))?;
 
-    let messages = list_response.messages.ok_or("No messages found")?;
+    let messages = list_response.messages.ok_or("未找到邮件")?;
 
     // Regex for 6-digit code
     let re = regex::Regex::new(r"\b\d{6}\b").map_err(|e| e.to_string())?;
@@ -315,7 +314,7 @@ pub fn fetch_verification_code_api(app: &AppHandle, min_timestamp: i64) -> Resul
         }
     }
 
-    Err("No 6-digit code found in recent emails".to_string())
+    Err("近期邮件中未找到 6 位验证码".to_string())
 }
 
 fn extract_text_from_payload(payload: &MessagePayload) -> String {
@@ -374,7 +373,7 @@ pub fn get_access_token() -> Result<String, String> {
 
     match tokens {
         Some(t) => Ok(t.access_token),
-        None => Err("Not authenticated. Please run OAuth flow first.".to_string()),
+        None => Err("未认证。请先运行 OAuth 流程。".to_string()),
     }
 }
 
