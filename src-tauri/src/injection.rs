@@ -26,35 +26,41 @@ impl InjectionManager {
     pub fn inject(&self) -> Result<String, String> {
         let target_path = Path::new(ORCHIDS_PATH);
         if !target_path.exists() {
-            return Err("Orchids app not found at expected path".into());
+            return Err("未找到 Orchids 应用，请确认路径是否正确。".into());
         }
 
-        let content = fs::read_to_string(target_path).map_err(|e| e.to_string())?;
+        let content = fs::read_to_string(target_path).map_err(|e| format!("读取失败: {}", e))?;
 
-        // Check if already injected
         if content.contains(INJECTION_MARKER) {
-            // Update injection code if needed (simple overwrite)
-            // For now, assume if marker exists it's fine, or we can force update
-            return Ok("Already injected".into());
+            return Ok("已注入，无需重复操作。".into());
         }
 
-        // Backup
-        let _ = fs::copy(target_path, target_path.with_extension("js.bak"));
+        // 1. Create Backup with timestamp
+        let backup_path = target_path.with_extension(format!("js.{}.bak", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()));
+        fs::copy(target_path, &backup_path).map_err(|e| format!("备份失败: {}", e))?;
 
-        // Prepend
+        // 2. Prepend injection code safely
         let new_content = format!("{}\n\n{}", self.injection_code, content);
-        fs::write(target_path, new_content).map_err(|e| e.to_string())?;
+        
+        // 3. Atomic-ish write (write to temp then rename)
+        let temp_path = target_path.with_extension("js.tmp");
+        fs::write(&temp_path, new_content).map_err(|e| format!("写入临时文件失败: {}", e))?;
+        
+        if let Err(e) = fs::rename(&temp_path, target_path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(format!("替换文件失败 (可能是权限问题): {}", e));
+        }
 
-        Ok("Injection successful".into())
+        Ok("注入成功。请重启 Orchids 应用。".into())
     }
 
     pub fn uninject(&self) -> Result<String, String> {
         let target_path = Path::new(ORCHIDS_PATH);
         if !target_path.exists() {
-            return Err("Orchids app not found".into());
+            return Err("未找到 Orchids 应用".into());
         }
 
-        let content = fs::read_to_string(target_path).map_err(|e| e.to_string())?;
+        let content = fs::read_to_string(target_path).map_err(|e| format!("读取失败: {}", e))?;
 
         if let Some(start_idx) = content.find(INJECTION_MARKER) {
             // Find end marker
@@ -66,12 +72,16 @@ impl InjectionManager {
                     &content[..start_idx],
                     &content[end_pos..].trim_start()
                 );
-                fs::write(target_path, new_content).map_err(|e| e.to_string())?;
-                return Ok("Uninjected successfully".into());
+                
+                let temp_path = target_path.with_extension("js.tmp");
+                fs::write(&temp_path, new_content).map_err(|e| format!("写入临时文件失败: {}", e))?;
+                fs::rename(&temp_path, target_path).map_err(|e| format!("还原失败: {}", e))?;
+                
+                return Ok("还原成功。请重启 Orchids 应用。".into());
             }
         }
 
-        Ok("No injection found".into())
+        Ok("未发现注入内容。".into())
     }
 }
 
@@ -98,42 +108,46 @@ pub fn check_captured_data(
         let _ = std::thread::spawn(|| {
             let script = r#"
             try
-                tell application "Google Chrome"
-                    set windowList to every window
-                    repeat with aWindow in windowList
-                        set tabList to every tab of aWindow
-                        repeat with aTab in tabList
-                            if URL of aTab contains "orchids.app" then
-                                close aTab
-                            end if
-                        end repeat
-                    end repeat
-                end tell
-            end try
-            try
-                tell application "Safari"
-                    set windowList to every window
-                    repeat with aWindow in windowList
-                        set tabList to every tab of aWindow
-                        repeat with aTab in tabList
-                            if URL of aTab contains "orchids.app" then
-                                close aTab
-                            end if
-                        end repeat
-                    end repeat
-                end tell
-            end try
-            try
-                tell application "Arc"
-                     tell front window
-                        set tabList to every tab
-                        repeat with aTab in tabList
-                            if URL of aTab contains "orchids.app" then
-                                close aTab
-                            end if
+                if application "Google Chrome" is running then
+                    tell application "Google Chrome"
+                        repeat with aWindow in windows
+                            set tabList to every tab of aWindow
+                            repeat with aTab in tabList
+                                if URL of aTab contains "orchids.app" then
+                                    close aTab
+                                end if
+                            end repeat
                         end repeat
                     end tell
-                end tell
+                end if
+            end try
+            try
+                if application "Safari" is running then
+                    tell application "Safari"
+                        repeat with aWindow in windows
+                            set tabList to every tab of aWindow
+                            repeat with aTab in tabList
+                                if URL of aTab contains "orchids.app" then
+                                    close aTab
+                                end if
+                            end repeat
+                        end repeat
+                    end tell
+                end if
+            end try
+            try
+                if application "Arc" is running then
+                    tell application "Arc"
+                         repeat with aWindow in windows
+                            set tabList to every tab of aWindow
+                            repeat with aTab in tabList
+                                if URL of aTab contains "orchids.app" then
+                                    close aTab
+                                end if
+                            end repeat
+                        end repeat
+                    end tell
+                end if
             end try
             "#;
             let _ = std::process::Command::new("osascript")
@@ -148,7 +162,7 @@ pub fn check_captured_data(
     Ok(None)
 }
 
-use crate::capture_service::ORCHIDS_COOKIE_PATH;
+use crate::capture_service::{get_orchids_cookie_path, get_orchids_data_dir};
 use rusqlite::Connection;
 use std::thread;
 use std::time::Duration;
@@ -167,7 +181,8 @@ pub fn trigger_restore(_app_handle: &AppHandle, account: &Account) -> Result<(),
     println!("Orchids killed. Opening DB...");
 
     // 2. Open DB
-    let path = Path::new(ORCHIDS_COOKIE_PATH);
+    let path_buf = get_orchids_cookie_path();
+    let path = path_buf.as_path();
     // REMOVED manual deletion of journal/wal files to let SQLite handle recovery/consistency
 
     if !path.exists() {
@@ -273,7 +288,8 @@ pub fn clear_cookies_and_restart(_app_handle: &AppHandle) -> Result<(), String> 
     thread::sleep(Duration::from_millis(100));
 
     // 2. Clear Cookies (SQL prefered to preserve DB structure)
-    let path = Path::new(ORCHIDS_COOKIE_PATH);
+    let path_buf = get_orchids_cookie_path();
+    let path = path_buf.as_path();
     if let Err(e) = clear_cookies_db(path) {
         println!("SQL Clear failed, deleting file: {}", e);
         let _ = fs::remove_file(path);
@@ -291,14 +307,15 @@ pub fn reset_machine_id(_app_handle: &AppHandle) -> Result<String, String> {
     println!("Resetting Machine ID...");
 
     // 0. Backup Local Storage (Protection against app wipe)
-    let ls_path = Path::new("/Users/huaan/Library/Application Support/Orchids/Local Storage");
-    let ls_bak = Path::new("/Users/huaan/Library/Application Support/Orchids/Local Storage.bak");
+    let data_dir = get_orchids_data_dir();
+    let ls_path = data_dir.join("Local Storage");
+    let ls_bak = data_dir.join("Local Storage.bak");
     if ls_path.exists() {
         println!("Backing up Local Storage...");
         let _ = Command::new("cp")
             .arg("-R")
-            .arg(ls_path)
-            .arg(ls_bak)
+            .arg(&ls_path)
+            .arg(&ls_bak)
             .status();
     }
 
@@ -327,20 +344,20 @@ pub fn reset_machine_id(_app_handle: &AppHandle) -> Result<String, String> {
     }
 
     // 3. Write to .updaterId
-    let updater_path = Path::new("/Users/huaan/Library/Application Support/Orchids/.updaterId");
+    let updater_path = data_dir.join(".updaterId");
     if let Some(parent) = updater_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    fs::write(updater_path, &new_uuid).map_err(|e| format!("Failed to write .updaterId: {}", e))?;
+    fs::write(&updater_path, &new_uuid).map_err(|e| format!("Failed to write .updaterId: {}", e))?;
 
     println!("New Machine ID written: {}", new_uuid);
 
     // 4. Clear Cookies - Attempt SQL Clean First
-    let cookie_path = Path::new(ORCHIDS_COOKIE_PATH);
-    if let Err(e) = clear_cookies_db(cookie_path) {
+    let cookie_path = get_orchids_cookie_path();
+    if let Err(e) = clear_cookies_db(&cookie_path) {
         println!("SQL Clear failed, deleting file: {}", e);
-        let _ = fs::remove_file(cookie_path); // Fallback
-                                              // Also remove journals in fallback case only
+        let _ = fs::remove_file(&cookie_path); // Fallback
+                                               // Also remove journals in fallback case only
         if let Some(parent) = cookie_path.parent() {
             if let Some(filename_os) = cookie_path.file_name() {
                 let filename = filename_os.to_string_lossy();

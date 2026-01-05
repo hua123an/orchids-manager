@@ -60,8 +60,8 @@ fn import_current_session(
     app: AppHandle,
     state: State<'_, AccountManagerState>,
 ) -> Result<Account, String> {
-    use std::path::Path;
-    let path = Path::new(capture_service::ORCHIDS_COOKIE_PATH);
+    let path_buf = capture_service::get_orchids_cookie_path();
+    let path = path_buf.as_path();
 
     // Also try the webview partition if main one fails or is empty?
     // For now stick to main.
@@ -297,14 +297,14 @@ async fn clerk_action_register_webview(
     imap_port: u16,
     imap_user: String,
     imap_pass: String,
+    capture_port: u16,
 ) -> Result<String, String> {
     // 1. Reset Machine ID & Hard Restart (Kills app, clears cookies, keeps LocalStorage, restarts)
     println!("Resetting Device Identity for Registration...");
 
     // Log Current ID
-    let updater_path =
-        std::path::Path::new("/Users/huaan/Library/Application Support/Orchids/.updaterId");
-    if let Ok(current_id) = std::fs::read_to_string(updater_path) {
+    let updater_path = capture_service::get_orchids_data_dir().join(".updaterId");
+    if let Ok(current_id) = std::fs::read_to_string(&updater_path) {
         println!("Current Machine ID: {}", current_id.trim());
     } else {
         println!("Current Machine ID: None (File not found)");
@@ -325,18 +325,22 @@ async fn clerk_action_register_webview(
         .arg(
             r#"
         tell application "System Events"
-            tell process "Orchids"
-                set frontmost to true
-                try
-                    click button "Log in" of window 1
-                on error
+            if exists process "Orchids" then
+                tell process "Orchids"
+                    set frontmost to true
                     try
-                        click button "Sign in" of window 1
-                    on error
-                        key code 36 -- Enter
+                        if exists button "Log in" of window 1 then
+                            click button "Log in" of window 1
+                        else if exists button "Sign in" of window 1 then
+                            click button "Sign in" of window 1
+                        else
+                            key code 36 -- Enter
+                        end if
+                    on error err
+                        log "AppleScript Error: " & err
                     end try
-                end try
-            end tell
+                end tell
+            end if
         end tell
         "#,
         )
@@ -356,7 +360,7 @@ async fn clerk_action_register_webview(
             // Session Watcher (Ping local server with cookie)
             setInterval(() => {{
                 if (document.cookie.includes('__session')) {{
-                    new Image().src = 'http://127.0.0.1:8086/?cookie=' + encodeURIComponent(document.cookie);
+                    new Image().src = 'http://127.0.0.1:' + {} + '/?cookie=' + encodeURIComponent(document.cookie);
 
                     // Redirect to Auth after successful login/registration
                     if (!window.hasRedirected) {{
@@ -382,9 +386,12 @@ async fn clerk_action_register_webview(
                          if(!window.lastSentLink || window.lastSentLink !== link) {{
                              window.lastSentLink = link;
                              console.log("Found Deep Link via Regex: " + link);
-                             new Image().src = 'http://127.0.0.1:8086/?deeplink=' + encodeURIComponent(link);
+                             new Image().src = 'http://127.0.0.1:' + {} + '/?deeplink=' + encodeURIComponent(link);
                          }}
                      }}
+...
+    window_ref.clone()
+        .initialization_script(&format!(r#"{}"#, init_script.replace("{}", &capture_port.to_string()))) // This is wrong, I should use format correctly
                      
                      // 2. Auto Click Button (Triggers navigation, which we catch in Rust)
                      const btns = Array.from(document.querySelectorAll('button, a'));

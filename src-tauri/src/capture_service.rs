@@ -9,8 +9,23 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-// Path to Orchids Cookie DB
-pub const ORCHIDS_COOKIE_PATH: &str = "/Users/huaan/Library/Application Support/Orchids/Cookies";
+// Helper to get Orchids Application Support directory
+pub fn get_orchids_data_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/huaan".to_string());
+        std::path::Path::new(&home).join("Library/Application Support/Orchids")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::path::PathBuf::from(".") // Placeholder
+    }
+}
+
+// Helper to get Orchids Cookie DB path
+pub fn get_orchids_cookie_path() -> std::path::PathBuf {
+    get_orchids_data_dir().join("Cookies")
+}
 
 pub struct CaptureService {
     is_running: Arc<Mutex<bool>>,
@@ -33,7 +48,8 @@ impl CaptureService {
         drop(running);
 
         thread::spawn(move || {
-            let path = Path::new(ORCHIDS_COOKIE_PATH);
+            let path_buf = get_orchids_cookie_path();
+            let path = path_buf.as_path();
             // Initialize last processed time to 0 so we always process once on start
             let mut last_processed_time = SystemTime::UNIX_EPOCH;
 

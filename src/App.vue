@@ -1,7 +1,6 @@
 <script setup>
 import { ref, onMounted, computed, nextTick, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { safeInvoke as invoke, safeListen as listen } from "./lib/tauri";
 
 // --- State ---
 const accounts = ref([]);
@@ -64,17 +63,15 @@ onMounted(async () => {
   await loadAccounts();
   await toggleListener(true);
 
-  import("@tauri-apps/api/event").then(({ listen }) => {
-    listen("account-captured", (event) => { showNotification(`已捕获: ${event.payload.display_name}`); loadAccounts(); });
-    listen("debug-log", (event) => {
-      debugLogs.value.unshift(`[${new Date().toLocaleTimeString()}] ${event.payload}`);
-      if (debugLogs.value.length > 200) debugLogs.value.pop();
-    });
-    listen("imap_log", (event) => {
-      const now = new Date().toLocaleTimeString();
-      autoLogs.value.unshift(`[${now}] ${event.payload}`);
-      if (autoLogs.value.length > 100) autoLogs.value.pop();
-    });
+  listen("account-captured", (event) => { showNotification(`已捕获: ${event.payload.display_name}`); loadAccounts(); });
+  listen("debug-log", (event) => {
+    debugLogs.value.unshift(`[${new Date().toLocaleTimeString()}] ${event.payload}`);
+    if (debugLogs.value.length > 200) debugLogs.value.pop();
+  });
+  listen("imap_log", (event) => {
+    const now = new Date().toLocaleTimeString();
+    autoLogs.value.unshift(`[${now}] ${event.payload}`);
+    if (autoLogs.value.length > 100) autoLogs.value.pop();
   });
 
   // Auto-Monitor Credits (Every 10s)
