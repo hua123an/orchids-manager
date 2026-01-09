@@ -1,393 +1,147 @@
-use crate::models::Account;
-use crate::store::AccountManagerState;
-use std::fs;
-use std::path::Path;
-use std::process::Command;
-use std::time::SystemTime;
-use tauri::{AppHandle, Manager, State};
-
-const ORCHIDS_PATH: &str = "/Applications/Orchids.app/Contents/Resources/app/main/index.js";
-const INJECTION_MARKER: &str = "// --- ORCHIDS MANAGER INJECTION START ---";
-const CAPTURED_FILE_NAME: &str = "captured_session.json";
-
-pub struct InjectionManager {
-    injection_code: String,
-}
-
-impl InjectionManager {
-    pub fn new() -> Self {
-        // Only include the script in the debug release or use include_str!
-        let code = include_str!("../assets/injection.js");
-        Self {
-            injection_code: code.to_string(),
-        }
-    }
-
-    pub fn inject(&self) -> Result<String, String> {
-        let target_path = Path::new(ORCHIDS_PATH);
-        if !target_path.exists() {
-            return Err("未找到 Orchids 应用，请确认路径是否正确。".into());
-        }
-
-        let content = fs::read_to_string(target_path).map_err(|e| format!("读取失败: {}", e))?;
-
-        if content.contains(INJECTION_MARKER) {
-            return Ok("已注入，无需重复操作。".into());
-        }
-
-        // 1. Create Backup with timestamp
-        let backup_path = target_path.with_extension(format!("js.{}.bak", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()));
-        fs::copy(target_path, &backup_path).map_err(|e| format!("备份失败: {}", e))?;
-
-        // 2. Prepend injection code safely
-        let new_content = format!("{}\n\n{}", self.injection_code, content);
-        
-        // 3. Atomic-ish write (write to temp then rename)
-        let temp_path = target_path.with_extension("js.tmp");
-        fs::write(&temp_path, new_content).map_err(|e| format!("写入临时文件失败: {}", e))?;
-        
-        if let Err(e) = fs::rename(&temp_path, target_path) {
-            let _ = fs::remove_file(&temp_path);
-            return Err(format!("替换文件失败 (可能是权限问题): {}", e));
-        }
-
-        Ok("注入成功。请重启 Orchids 应用。".into())
-    }
-
-    pub fn uninject(&self) -> Result<String, String> {
-        let target_path = Path::new(ORCHIDS_PATH);
-        if !target_path.exists() {
-            return Err("未找到 Orchids 应用".into());
-        }
-
-        let content = fs::read_to_string(target_path).map_err(|e| format!("读取失败: {}", e))?;
-
-        if let Some(start_idx) = content.find(INJECTION_MARKER) {
-            // Find end marker
-            let end_marker = "// --- ORCHIDS MANAGER INJECTION END ---";
-            if let Some(end_idx) = content.find(end_marker) {
-                let end_pos = end_idx + end_marker.len();
-                let new_content = format!(
-                    "{}{}",
-                    &content[..start_idx],
-                    &content[end_pos..].trim_start()
-                );
-                
-                let temp_path = target_path.with_extension("js.tmp");
-                fs::write(&temp_path, new_content).map_err(|e| format!("写入临时文件失败: {}", e))?;
-                fs::rename(&temp_path, target_path).map_err(|e| format!("还原失败: {}", e))?;
-                
-                return Ok("还原成功。请重启 Orchids 应用。".into());
-            }
-        }
-
-        Ok("未发现注入内容。".into())
-    }
-}
-
-pub fn check_captured_data(
-    app_handle: &AppHandle,
-    state: &State<AccountManagerState>,
-) -> Result<Option<Account>, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .expect("failed to get app data");
-    let capture_file = app_data_dir.join(CAPTURED_FILE_NAME);
-
-    if capture_file.exists() {
-        let content = fs::read_to_string(&capture_file).map_err(|e| e.to_string())?;
-        let account: Account = serde_json::from_str(&content).map_err(|e| e.to_string())?;
-
-        state.add_account(account.clone())?;
-
-        // Cleanup
-        let _ = fs::remove_file(capture_file);
-
-        // Close the browser tab (Chrome/Safari/Arc)
-        let _ = std::thread::spawn(|| {
-            let script = r#"
-            try
-                if application "Google Chrome" is running then
-                    tell application "Google Chrome"
-                        repeat with aWindow in windows
-                            set tabList to every tab of aWindow
-                            repeat with aTab in tabList
-                                if URL of aTab contains "orchids.app" then
-                                    close aTab
-                                end if
-                            end repeat
-                        end repeat
-                    end tell
-                end if
-            end try
-            try
-                if application "Safari" is running then
-                    tell application "Safari"
-                        repeat with aWindow in windows
-                            set tabList to every tab of aWindow
-                            repeat with aTab in tabList
-                                if URL of aTab contains "orchids.app" then
-                                    close aTab
-                                end if
-                            end repeat
-                        end repeat
-                    end tell
-                end if
-            end try
-            try
-                if application "Arc" is running then
-                    tell application "Arc"
-                         repeat with aWindow in windows
-                            set tabList to every tab of aWindow
-                            repeat with aTab in tabList
-                                if URL of aTab contains "orchids.app" then
-                                    close aTab
-                                end if
-                            end repeat
-                        end repeat
-                    end tell
-                end if
-            end try
-            "#;
-            let _ = std::process::Command::new("osascript")
-                .arg("-e")
-                .arg(script)
-                .output();
-        });
-
-        return Ok(Some(account));
-    }
-
-    Ok(None)
-}
-
 use crate::capture_service::{get_orchids_cookie_path, get_orchids_data_dir};
-use rusqlite::Connection;
+use crate::models::Account;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::thread;
 use std::time::Duration;
+use tauri::{AppHandle, Manager};
 
-pub fn trigger_restore(_app_handle: &AppHandle, account: &Account) -> Result<(), String> {
-    // 1. Kill Orchids
-    println!("Killing Orchids...");
-    let _ = Command::new("killall")
-        .arg("Orchids")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+const ORCHIDS_APP_PATH: &str = "/Applications/Orchids.app/Contents/Resources";
+const INJECTION_MARKER: &str = "// --- ORCHIDS MANAGER INJECTION START ---";
 
-    // Wait for it to die
-    thread::sleep(Duration::from_millis(100)); // Minimal wait
-    println!("Orchids killed. Opening DB...");
+pub struct OrchidsCore;
 
-    // 2. Open DB
-    let path_buf = get_orchids_cookie_path();
-    let path = path_buf.as_path();
-    // REMOVED manual deletion of journal/wal files to let SQLite handle recovery/consistency
+impl OrchidsCore {
+    /// (V2) Ensures the Orchids app is unpacked and injected with our NEW V2 script.
+    pub fn ensure_patched() -> Result<String, String> {
+        let resources_path = Path::new(ORCHIDS_APP_PATH);
+        if !resources_path.exists() {
+            return Err("Orchids application not found in /Applications".into());
+        }
 
-    if !path.exists() {
-        return Err("Orchids cookie database not found".into());
+        let main_js_path = resources_path.join("app/main/index.js");
+
+        // 1. Check content
+        if main_js_path.exists() {
+            let content = fs::read_to_string(&main_js_path).map_err(|e| e.to_string())?;
+            // If it contains V2 marker, we are good.
+            if content.contains("// --- ORCHIDS MANAGER INJECTION START V2 ---") {
+                return Ok("Orchids is patched (V2) and ready.".into());
+            }
+
+            // If not (unpatched OR old V1 patch), we proceed to inject.
+            // If it's V1, we will strip it in inject_script.
+            return Self::inject_script(&main_js_path);
+        }
+
+        // 2. Needs Unpacking (ASAR)
+        println!("Orchids is packed. Unpacking ASAR...");
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "cd '{}' && npx -y @electron/asar extract app.asar app && mv app.asar app.asar.bak",
+                ORCHIDS_APP_PATH
+            ))
+            .status()
+            .map_err(|e| format!("Failed to execute unpack command: {}", e))?;
+
+        if !status.success() {
+            return Err("Failed to unpack Orchids ASAR. Install Node.js/Permissions?".into());
+        }
+
+        // 3. Inject
+        Self::inject_script(&main_js_path)
     }
 
-    let mut conn = Connection::open(path).map_err(|e| format!("Failed to open DB: {}", e))?;
+    fn inject_script(target_path: &Path) -> Result<String, String> {
+        println!("Injecting V2 control script into {:?}...", target_path);
 
-    // Set busy timeout to allow file locking to resolve
-    let _ = conn.execute("PRAGMA busy_timeout = 5000;", []);
+        let mut original_content = fs::read_to_string(target_path).unwrap_or_default();
+        let injection_code = include_str!("../assets/injection.js");
 
-    let tx = conn
-        .transaction()
-        .map_err(|e| format!("Transaction error: {}", e))?;
+        // CLEANUP OLD V1 OR PARTIAL INJECTIONS
+        // We look for the Start/End markers and remove everything between them.
+        // Old Marker: // --- ORCHIDS MANAGER INJECTION START ---
 
-    // 3. Clear existing cookies
-    println!("Clearing old cookies...");
-    tx.execute("DELETE FROM cookies", [])
-        .map_err(|e| format!("Failed to clear cookies: {}", e))?;
-
-    // 4. Insert new cookies - FULL SCHEMA
-    let mut stmt = tx.prepare(
-        "INSERT INTO cookies (
-            creation_utc, host_key, top_frame_site_key, name, value, encrypted_value, path,
-            expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent,
-            priority, samesite, source_scheme, source_port, last_update_utc, source_type, has_cross_site_ancestor
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).map_err(|e| e.to_string())?;
-
-    for cookie in &account.cookies {
-        let expires_utc = if let Some(exp) = cookie.expiration_date {
-            ((exp + 11644473600.0) * 1_000_000.0) as i64
-        } else {
-            0
-        };
-
-        let now_win_us = ((SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64()
-            + 11644473600.0)
-            * 1_000_000.0) as i64;
-
-        stmt.execute(rusqlite::params![
-            now_win_us,                          // creation_utc
-            &cookie.domain,                      // host_key
-            "",                                  // top_frame_site_key
-            &cookie.name,                        // name
-            &cookie.value,                       // value
-            b"",                                 // encrypted_value (empty blob)
-            &cookie.path,                        // path
-            expires_utc,                         // expires_utc
-            cookie.secure,                       // is_secure
-            cookie.http_only,                    // is_httponly
-            now_win_us,                          // last_access_utc
-            if expires_utc > 0 { 1 } else { 0 }, // has_expires
-            1,                                   // is_persistent
-            cookie.priority.unwrap_or(1),        // priority
-            cookie.samesite.unwrap_or(-1),       // samesite
-            if cookie.secure { 2 } else { 1 },   // source_scheme
-            443,                                 // source_port
-            now_win_us,                          // last_update_utc
-            0,                                   // source_type (0 = unknown)
-            0,                                   // has_cross_site_ancestor (0 = false)
-        ])
-        .map_err(|e| format!("Insert failed for {}: {}", cookie.name, e))?;
-    }
-    println!("Cookies inserted.");
-
-    drop(stmt);
-    tx.commit().map_err(|e| format!("Commit failed: {}", e))?;
-
-    println!("Cookies restored successfully.");
-
-    // 5. Restart Orchids
-    println!("Restarting Orchids...");
-    thread::sleep(Duration::from_millis(100));
-    let _ = Command::new("open").arg("-a").arg("Orchids").spawn();
-
-    Ok(())
-}
-
-fn clear_cookies_db(path: &Path) -> Result<(), String> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let conn = Connection::open(path).map_err(|e| format!("DB Open Error: {}", e))?;
-    let _ = conn.execute("PRAGMA busy_timeout = 5000;", []);
-    conn.execute("DELETE FROM cookies", [])
-        .map_err(|e| format!("DB Delete Error: {}", e))?;
-    Ok(())
-}
-
-pub fn clear_cookies_and_restart(_app_handle: &AppHandle) -> Result<(), String> {
-    // 1. Kill Orchids aggressively
-    println!("Killing Orchids for logout...");
-    let _ = Command::new("killall")
-        .arg("Orchids")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    thread::sleep(Duration::from_millis(100));
-
-    // 2. Clear Cookies (SQL prefered to preserve DB structure)
-    let path_buf = get_orchids_cookie_path();
-    let path = path_buf.as_path();
-    if let Err(e) = clear_cookies_db(path) {
-        println!("SQL Clear failed, deleting file: {}", e);
-        let _ = fs::remove_file(path);
-    }
-
-    // 3. Restart Orchids
-    println!("Restarting Orchids...");
-    thread::sleep(Duration::from_millis(100));
-    let _ = Command::new("open").arg("-a").arg("Orchids").spawn();
-
-    Ok(())
-}
-
-pub fn reset_machine_id(_app_handle: &AppHandle) -> Result<String, String> {
-    println!("Resetting Machine ID...");
-
-    // 0. Backup Local Storage (Protection against app wipe)
-    let data_dir = get_orchids_data_dir();
-    let ls_path = data_dir.join("Local Storage");
-    let ls_bak = data_dir.join("Local Storage.bak");
-    if ls_path.exists() {
-        println!("Backing up Local Storage...");
-        let _ = Command::new("cp")
-            .arg("-R")
-            .arg(&ls_path)
-            .arg(&ls_bak)
-            .status();
-    }
-
-    // 1. Kill Orchids
-    println!("Killing Orchids...");
-    let _ = Command::new("killall")
-        .arg("Orchids")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    thread::sleep(Duration::from_millis(500));
-
-    // 2. Generate new UUID
-    let output = Command::new("uuidgen")
-        .output()
-        .map_err(|e| format!("Failed to generate UUID: {}", e.to_string()))?;
-
-    let new_uuid = String::from_utf8(output.stdout)
-        .map_err(|e| e.to_string())?
-        .trim()
-        .to_string();
-
-    if new_uuid.is_empty() {
-        return Err("Generated empty UUID".into());
-    }
-
-    // 3. Write to .updaterId
-    let updater_path = data_dir.join(".updaterId");
-    if let Some(parent) = updater_path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    fs::write(&updater_path, &new_uuid).map_err(|e| format!("Failed to write .updaterId: {}", e))?;
-
-    println!("New Machine ID written: {}", new_uuid);
-
-    // 4. Clear Cookies - Attempt SQL Clean First
-    let cookie_path = get_orchids_cookie_path();
-    if let Err(e) = clear_cookies_db(&cookie_path) {
-        println!("SQL Clear failed, deleting file: {}", e);
-        let _ = fs::remove_file(&cookie_path); // Fallback
-                                               // Also remove journals in fallback case only
-        if let Some(parent) = cookie_path.parent() {
-            if let Some(filename_os) = cookie_path.file_name() {
-                let filename = filename_os.to_string_lossy();
-                let _ = fs::remove_file(parent.join(format!("{}-journal", filename)));
-                let _ = fs::remove_file(parent.join(format!("{}-wal", filename)));
+        if let Some(start_idx) = original_content.find(INJECTION_MARKER) {
+            // If we find the legacy V1 marker, we attempt to strip it.
+            // V1 structure was `(function() { ... })();` prepended.
+            // We can search for the end of that IIFE.
+            if let Some(end_idx) = original_content.find("})();") {
+                let cutoff = end_idx + 5;
+                if cutoff < original_content.len() {
+                    original_content = original_content[cutoff..].trim_start().to_string();
+                }
+            } else if let Some(app_start) = original_content.find("const { app,") {
+                // Fallback: If we can't find end, look for where original app code likely starts
+                original_content = original_content[app_start..].to_string();
             }
         }
+
+        // New Injection (V2) has explicit START and END markers.
+        let new_content = format!("{}\n\n{}", injection_code, original_content);
+        fs::write(target_path, new_content)
+            .map_err(|e| format!("Failed to write injection: {}", e))?;
+
+        Ok("Orchids successfully patched (V2)!".into())
     }
 
-    // 5. Restore Local Storage if it was deleted/wiped (Pre-emptive restore won't stop app from wiping if it wants to,
-    // but copying it back *might* help if we restore after launch? No, file locks)
-    // Actually, if we just *don't delete it*, and the App wipes it, we can't stop the app.
-    // BUT the backup allows the USER to recover manualy if needed.
-    // Let's try to restore it inplace if it's missing.
-    if !ls_path.exists() && ls_bak.exists() {
-        println!("Restoring Local Storage...");
-        let _ = Command::new("cp")
-            .arg("-R")
-            .arg(ls_bak)
-            .arg(ls_path)
-            .status();
+    pub fn switch_account(_app_handle: &AppHandle, account: &Account) -> Result<(), String> {
+        println!(
+            ">>> Starting Account Switch (V2) for: {}",
+            account.display_name
+        );
+
+        // 1. KILL
+        let _ = Command::new("killall").arg("Orchids").status();
+        thread::sleep(Duration::from_millis(1000));
+
+        // 2. PREPARE JSON (Shared Path)
+        let home = std::env::var("HOME").map_err(|_| "No HOME env".to_string())?;
+        let shared_dir = PathBuf::from(home).join("Library/Application Support/OrchidsManager");
+
+        if !shared_dir.exists() {
+            fs::create_dir_all(&shared_dir).map_err(|e| e.to_string())?;
+        }
+
+        let restore_file = shared_dir.join("restore_session.json");
+        let json = serde_json::to_string_pretty(account).map_err(|e| e.to_string())?;
+        fs::write(&restore_file, json)
+            .map_err(|e| format!("Failed to write restore file: {}", e))?;
+
+        // 3. WIPE CLEAN
+        // 3. WIPE CLEAN
+        // Clear Cookies DB - DISABLED: Let Electron session API handle it
+        // let cookie_path = get_orchids_cookie_path();
+        // if cookie_path.exists() {
+        //     let _ = fs::remove_file(&cookie_path);
+        //     if let Some(parent) = cookie_path.parent() {
+        //         let stem = cookie_path.file_stem().unwrap().to_string_lossy();
+        //         let _ = fs::remove_file(parent.join(format!("{}.wal", stem)));
+        //         let _ = fs::remove_file(parent.join(format!("{}.shm", stem)));
+        //         let _ = fs::remove_file(parent.join(format!("{}-wal", stem)));
+        //         let _ = fs::remove_file(parent.join(format!("{}-journal", stem)));
+        //     }
+        // }
+
+        // Clear Local Storage
+        // let orchids_data = get_orchids_data_dir();
+        // let ls_path = orchids_data.join("Local Storage");
+        // if ls_path.exists() {
+        //     let _ = fs::remove_dir_all(ls_path);
+        // }
+
+        // 4. RESTART
+        println!(">>> Launching Orchids...");
+        let child = Command::new("/usr/bin/open")
+            .arg("-a")
+            .arg("Orchids")
+            .spawn()
+            .map_err(|e| format!("Failed to launch Orchids: {}", e))?;
+
+        println!(">>> Orchids launched (PID: {:?})", child.id());
+
+        Ok(())
     }
-
-    // 5. Restart Orchids
-    println!("Restarting Orchids...");
-    thread::sleep(Duration::from_millis(500));
-    let _ = Command::new("open").arg("-a").arg("Orchids").spawn();
-
-    Ok(format!(
-        "Reset Success. App Restarted. New ID: {}",
-        new_uuid
-    ))
 }

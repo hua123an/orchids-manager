@@ -1,30 +1,42 @@
-use crate::cookie_reader::read_cookies_from_db;
-use crate::models::Account;
+use crate::models::{Account, CookieData, UserInfo};
 use crate::store::AccountManagerState;
-use base64::{engine::general_purpose, Engine as _};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-// Helper to get Orchids Application Support directory
-    pub fn get_orchids_data_dir() -> std::path::PathBuf {
-        #[cfg(target_os = "macos")]
-        {
-            let home = std::env::var("HOME").expect("HOME environment variable not set");
-            std::path::Path::new(&home).join("Library/Application Support/Orchids")
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            std::path::PathBuf::from(".") // Placeholder
-        }
-    }
+use base64::{engine::general_purpose, Engine as _};
 
-// Helper to get Orchids Cookie DB path
-pub fn get_orchids_cookie_path() -> std::path::PathBuf {
+// Helper: Real Orchids App Data (for cleaning)
+pub fn get_orchids_data_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").expect("HOME environment variable not set");
+        Path::new(&home).join("Library/Application Support/Orchids")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        PathBuf::from(".")
+    }
+}
+
+pub fn get_orchids_cookie_path() -> PathBuf {
     get_orchids_data_dir().join("Cookies")
+}
+
+// Helper: Shared Manager Data (for capturing/restoring)
+pub fn get_manager_shared_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").expect("HOME environment variable not set");
+        Path::new(&home).join("Library/Application Support/OrchidsManager")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        PathBuf::from(".")
+    }
 }
 
 pub struct CaptureService {
@@ -48,76 +60,63 @@ impl CaptureService {
         drop(running);
 
         thread::spawn(move || {
-            let path_buf = get_orchids_cookie_path();
-            let path = path_buf.as_path();
-            // Initialize last processed time to 0 so we always process once on start
-            let mut last_processed_time = SystemTime::UNIX_EPOCH;
+            let cookie_path = get_orchids_cookie_path();
+            let _ = app_handle.emit(
+                "debug-log",
+                format!("Monitoring Cookies at: {:?}", cookie_path),
+            );
 
-            let _ = app_handle.emit("debug-log", format!("Monitoring started on: {:?}", path));
+            // Keep track of the last captured ID to avoid log spam,
+            // but we still want to update if credits change, so we might check periodically.
+            let mut last_captured_id = String::new();
 
             loop {
-                // Check if we should stop
+                // Check stop
                 if let Ok(running) = is_running.lock() {
                     if !*running {
                         break;
                     }
                 }
 
-                if path.exists() {
-                    if let Ok(metadata) = fs::metadata(path) {
-                        if let Ok(modified) = metadata.modified() {
-                            // Process if modified is newer OR if it's the first run (last_processed_time is EPOCH)
-                            // But actually, just checking modified > last_processed_time is enough if last is EPOCH.
+                if cookie_path.exists() {
+                    match process_cookies(&cookie_path) {
+                        Ok(Some(account)) => {
+                            let state = app_handle.state::<AccountManagerState>();
+                            let acc_id = account.id.clone();
 
-                            if modified > last_processed_time {
-                                let _ = app_handle
-                                    .emit("debug-log", "Detected file change, processing...");
+                            // Try to add/update
+                            if let Ok(_) = state.add_account(account.clone()) {
+                                if last_captured_id != acc_id {
+                                    let _ = app_handle.emit(
+                                        "debug-log",
+                                        format!("Auto-Captured Account: {}", acc_id),
+                                    );
 
-                                // Debounce slightly
-                                thread::sleep(Duration::from_secs(1));
+                                    // Emit success to stop automation UI
+                                    let _ = app_handle.emit(
+                                        "register_success",
+                                        serde_json::json!({
+                                            "email": account.email.clone().unwrap_or_default(),
+                                            "password": "Captured via DB"
+                                        }),
+                                    );
 
-                                match process_cookies(path) {
-                                    Ok(Some(account)) => {
-                                        let state = app_handle.state::<AccountManagerState>();
-                                        if let Err(e) = state.add_account(account.clone()) {
-                                            let _ = app_handle.emit(
-                                                "debug-log",
-                                                format!("Failed to save: {}", e),
-                                            );
-                                        } else {
-                                            let _ = app_handle.emit(
-                                                "debug-log",
-                                                format!("Captured: {}", account.display_name),
-                                            );
-                                            let _ = app_handle.emit("account-captured", account);
-                                        }
-                                        // Update timestamp only on success? No, always to avoid loop,
-                                        // UNLESS we want to retry. But retrying corrupt file is bad.
-                                        last_processed_time = modified;
-                                    }
-                                    Ok(None) => {
-                                        let _ =
-                                            app_handle.emit("debug-log", "No session cookie found");
-                                        // Maybe it's a partial write, don't update last_processed_time?
-                                        // No, update it, otherwise we loop forever on a logged-out state.
-                                        last_processed_time = modified;
-                                    }
-                                    Err(e) => {
-                                        let _ = app_handle
-                                            .emit("debug-log", format!("Read error: {}", e));
-                                        // If error (e.g. locked), maybe don't update time so we retry?
-                                        // But if persistent error, we loop. Let's update.
-                                        last_processed_time = modified;
-                                    }
+                                    last_captured_id = acc_id;
                                 }
                             }
                         }
+                        Ok(None) => {
+                            // No session in DB (logged out?)
+                        }
+                        Err(e) => {
+                            // Suppress excessive error logs for locked DBs etc
+                            // let _ = app_handle.emit("debug-log", format!("Capture Error: {}", e));
+                        }
                     }
-                } else {
-                    let _ = app_handle.emit("debug-log", "Cookie file not found");
                 }
 
-                thread::sleep(Duration::from_secs(2));
+                // Poll every 3 seconds
+                thread::sleep(Duration::from_secs(3));
             }
             let _ = app_handle.emit("debug-log", "Monitoring thread exited");
         });
@@ -129,111 +128,7 @@ impl CaptureService {
     }
 }
 
-pub fn process_cookies(path: &Path) -> Result<Option<Account>, String> {
-    let cookies = read_cookies_from_db(path)?;
-
-    // Find __session
-    let session_cookie = cookies.iter().find(|c| c.name == "__session");
-    if session_cookie.is_none() {
-        return Ok(None);
-    }
-    let token = session_cookie.unwrap().value.clone();
-
-    let account = create_account_from_token(&token, cookies)?;
-    Ok(Some(account))
-}
-
-pub fn create_account_from_token(
-    token: &str,
-    cookies: Vec<crate::models::CookieData>,
-) -> Result<Account, String> {
-    // Decode JWT for ID (Basic decode)
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() < 2 {
-        return Err("Invalid Token format".to_string());
-    }
-
-    let payload = parts[1];
-    // JWT standard is Base64Url NO padding
-    let decoded = general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .or_else(|_| {
-            // Fallback: Try adding padding and standard decoding
-            let padded = match payload.len() % 4 {
-                0 => payload.to_string(),
-                2 => format!("{}==", payload),
-                3 => format!("{}=", payload),
-                _ => payload.to_string(),
-            };
-            general_purpose::STANDARD.decode(&padded)
-        })
-        .or_else(|_| {
-            // One last try: URL Safe WITH padding
-            let padded = match payload.len() % 4 {
-                0 => payload.to_string(),
-                2 => format!("{}==", payload),
-                3 => format!("{}=", payload),
-                _ => payload.to_string(),
-            };
-            general_purpose::URL_SAFE.decode(&padded)
-        })
-        .map_err(|e| format!("Base64 fail: {}", e))?;
-
-    let json_str = String::from_utf8(decoded).map_err(|e| e.to_string())?;
-    let claims: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| e.to_string())?;
-
-    let user_id = claims["sub"].as_str().ok_or("No sub in token")?;
-
-    println!("Found User ID: {}", user_id);
-
-    // Fetch Profile
-    let client = reqwest::blocking::Client::new();
-    let resp = client.get(format!("https://orchids-server.calmstone-6964e08a.westeurope.azurecontainerapps.io/user/profile/{}", user_id))
-        .header("Authorization", format!("Bearer {}", token))
-        .send()
-        .map_err(|e| e.to_string())?;
-
-    if !resp.status().is_success() {
-        return Err(format!("API Error: {}", resp.status()));
-    }
-
-    let profile: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
-
-    // Construct Account
-    let display_name = if let Some(name) = profile["fullName"].as_str() {
-        name.to_string()
-    } else if let Some(email) = profile["email"].as_str() {
-        email.split('@').next().unwrap_or(email).to_string()
-    } else {
-        "Unknown User".to_string()
-    };
-
-    let account = Account {
-        id: user_id.to_string(),
-        display_name,
-        email: profile["email"].as_str().map(|s| s.to_string()),
-        avatar_url: profile["imageUrl"].as_str().map(|s| s.to_string()),
-        last_active_at: Some(
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64,
-        ),
-        user_info: Some(crate::models::UserInfo {
-            id: None,
-            user_id: user_id.to_string(),
-            full_name: profile["fullName"].as_str().map(|s| s.to_string()),
-            email: profile["email"].as_str().map(|s| s.to_string()),
-            image_url: profile["imageUrl"].as_str().map(|s| s.to_string()),
-            plan: profile["plan"].as_str().map(|s| s.to_string()),
-            credits: profile["credits"].as_i64(),
-        }),
-        cookies: cookies,
-    };
-
-    Ok(account)
-}
-
+// Kept for backward compat or manual fetches if needed
 pub fn fetch_fresh_credits(user_id: &str, token: &str) -> Result<i64, String> {
     let client = reqwest::blocking::Client::new();
     let resp = client.get(format!("https://orchids-server.calmstone-6964e08a.westeurope.azurecontainerapps.io/user/profile/{}", user_id))
@@ -249,4 +144,93 @@ pub fn fetch_fresh_credits(user_id: &str, token: &str) -> Result<i64, String> {
     profile["credits"]
         .as_i64()
         .ok_or("No credits field".to_string())
+}
+
+pub fn get_user_id_from_token(token: &str) -> Option<String> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let payload_segment = parts[1];
+    let mut padded = payload_segment.to_string();
+    while padded.len() % 4 != 0 {
+        padded.push('=');
+    }
+    let normalized = padded.replace("-", "+").replace("_", "/");
+
+    if let Ok(decoded) = general_purpose::STANDARD.decode(normalized) {
+        if let Ok(json_str) = String::from_utf8(decoded) {
+            if let Ok(claims) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                if let Some(sub) = claims.get("sub").and_then(|v| v.as_str()) {
+                    return Some(sub.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn process_cookies(path: &Path) -> Result<Option<Account>, String> {
+    // 1. Try reading the SQLite Cookies file from the Orchids App
+    if let Ok(cookies) = crate::cookie_reader::read_cookies_from_db(path) {
+        if let Some(session_cookie) = cookies.iter().find(|c| c.name == "__session") {
+            let token = &session_cookie.value;
+
+            // 2. Decode JWT to get User ID
+            if let Some(user_id) = get_user_id_from_token(token) {
+                // 3. Fetch Full Profile
+                let client = reqwest::blocking::Client::new();
+                let resp = client.get(format!("https://orchids-server.calmstone-6964e08a.westeurope.azurecontainerapps.io/user/profile/{}", user_id))
+                     .header("Authorization", format!("Bearer {}", token))
+                     .send()
+                     .map_err(|e| e.to_string())?;
+
+                if resp.status().is_success() {
+                    if let Ok(profile) = resp.json::<serde_json::Value>() {
+                        let credits = profile["credits"].as_i64().unwrap_or(0);
+                        let plan = profile["plan"].as_str().unwrap_or("Free").to_string();
+                        let email = profile["email"].as_str().unwrap_or("").to_string();
+                        let image = profile["imageUrl"].as_str().map(|s| s.to_string());
+                        let full_name = profile["firstName"].as_str().unwrap_or("User").to_string();
+
+                        let new_account = Account {
+                            id: user_id.clone(),
+                            display_name: full_name.clone(),
+                            email: Some(email.clone()),
+                            password: None, // Captured from session, password unknown
+                            avatar_url: image.clone(),
+                            last_active_at: Some(
+                                SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs() as i64,
+                            ),
+                            user_info: Some(UserInfo {
+                                id: None,
+                                user_id: user_id.clone(),
+                                full_name: Some(full_name),
+                                email: Some(email),
+                                image_url: image,
+                                plan: Some(plan),
+                                credits: Some(credits),
+                            }),
+                            cookies: cookies.clone(), // Save all cookies
+                        };
+                        return Ok(Some(new_account));
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: Check JSON file (if manual import fails to read DB, maybe user wants to load last auto-captured?)
+    let shared_dir = get_manager_shared_dir();
+    let captured_file = shared_dir.join("captured_session.json");
+    if captured_file.exists() {
+        let content = fs::read_to_string(&captured_file).map_err(|e| e.to_string())?;
+        let account: Account = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        return Ok(Some(account));
+    }
+
+    Ok(None)
 }

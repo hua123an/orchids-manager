@@ -78,7 +78,7 @@ pub fn get_auth_url() -> String {
 }
 
 /// Start OAuth flow: opens browser and waits for callback
-pub fn start_oauth_flow() -> Result<OAuthTokens, String> {
+pub fn start_oauth_flow(app: &AppHandle) -> Result<OAuthTokens, String> {
     let auth_url = get_auth_url();
 
     // Open browser
@@ -102,7 +102,6 @@ pub fn start_oauth_flow() -> Result<OAuthTokens, String> {
         .map_err(|e| format!("读取请求失败: {}", e))?;
 
     // Parse the authorization code from the request
-    // Example: GET /?code=4/0AfJoh...&scope=... HTTP/1.1
     let code = extract_code_from_request(&request_line)?;
 
     // Send success response to browser
@@ -110,14 +109,18 @@ pub fn start_oauth_flow() -> Result<OAuthTokens, String> {
         <html><body style='font-family: sans-serif; text-align: center; padding: 50px;'>\
         <h1>✅ 授权成功！</h1>\
         <p>您可以关闭此窗口并返回应用。</p>\
+        <script>window.close()</script>\
         </body></html>";
     stream.write_all(response.as_bytes()).ok();
 
     // Exchange code for tokens
     let tokens = exchange_code_for_tokens(&code)?;
 
-    // Store tokens
+    // Store tokens in memory
     *GMAIL_TOKENS.lock().unwrap() = Some(tokens.clone());
+
+    // Store tokens on disk
+    save_tokens_to_disk(app, &tokens);
 
     Ok(tokens)
 }
@@ -177,6 +180,19 @@ fn exchange_code_for_tokens(code: &str) -> Result<OAuthTokens, String> {
     Ok(tokens)
 }
 
+/// Exchange authorization code for tokens and save them (for WebView OAuth)
+pub fn exchange_and_save_tokens(app: &AppHandle, code: &str) -> Result<OAuthTokens, String> {
+    let tokens = exchange_code_for_tokens(code)?;
+
+    // Store in memory
+    *GMAIL_TOKENS.lock().unwrap() = Some(tokens.clone());
+
+    // Store on disk
+    save_tokens_to_disk(app, &tokens);
+
+    Ok(tokens)
+}
+
 /// Refresh the access token using refresh token
 pub fn refresh_access_token(refresh_token: &str) -> Result<OAuthTokens, String> {
     let client = Client::new();
@@ -216,52 +232,57 @@ pub fn refresh_access_token(refresh_token: &str) -> Result<OAuthTokens, String> 
     Ok(tokens)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct MessageListResponse {
     messages: Option<Vec<MessageSummary>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct MessageSummary {
     id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct MessageDetail {
     snippet: Option<String>,
     payload: Option<MessagePayload>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct MessagePayload {
     body: Option<MessageBody>,
     parts: Option<Vec<MessagePart>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct MessagePart {
-    mimeType: Option<String>,
+    #[serde(rename = "mimeType")]
+    mime_type: Option<String>,
     body: Option<MessageBody>,
     parts: Option<Vec<MessagePart>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct MessageBody {
     data: Option<String>,
 }
 
 /// Fetch verification code (only emails received AFTER min_timestamp)
 pub fn fetch_verification_code_api(app: &AppHandle, min_timestamp: i64) -> Result<String, String> {
-    // Ensure we have a valid token
-    let token = get_access_token()?;
+    // Ensure we have a valid token (Auto-load if needed)
+    let token = get_access_token(app)?;
 
     let client = Client::new();
 
-    // Query: in:inbox AND after:timestamp
-    let query = format!("in:inbox after:{}", min_timestamp);
+    // Query: Only get emails newer than timestamp
+    let query = format!("after:{}", min_timestamp);
     let url = Url::parse_with_params(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages",
-        &[("maxResults", "5"), ("q", &query)],
+        &[
+            ("maxResults", "10"),
+            ("q", &query),
+            ("includeSpamTrash", "true"),
+        ],
     )
     .map_err(|e| e.to_string())?;
 
@@ -278,12 +299,16 @@ pub fn fetch_verification_code_api(app: &AppHandle, min_timestamp: i64) -> Resul
     let list_response: MessageListResponse =
         res.json().map_err(|e| format!("解析列表失败: {}", e))?;
 
-    let messages = list_response.messages.ok_or("未找到邮件")?;
+    // If no messages found
+    if list_response.messages.is_none() {
+        return Err("未找到邮件".to_string());
+    }
+    let messages = list_response.messages.unwrap();
 
     // Regex for 6-digit code
     let re = regex::Regex::new(r"\b\d{6}\b").map_err(|e| e.to_string())?;
 
-    // 2. Fetch details for each message
+    // Fetch details for each message (newest first from API)
     for msg in messages {
         let detail_url = format!(
             "https://gmail.googleapis.com/gmail/v1/users/me/messages/{}",
@@ -304,8 +329,8 @@ pub fn fetch_verification_code_api(app: &AppHandle, min_timestamp: i64) -> Resul
                 }
 
                 // Check payload body
-                if let Some(payload) = detail.payload {
-                    let full_text = extract_text_from_payload(&payload);
+                if let Some(payload) = &detail.payload {
+                    let full_text = extract_text_from_payload(payload);
                     if let Some(code) = extract_code_from_text(&full_text, &re) {
                         return Ok(code);
                     }
@@ -322,7 +347,7 @@ fn extract_text_from_payload(payload: &MessagePayload) -> String {
 
     if let Some(parts) = &payload.parts {
         for part in parts {
-            if let Some(mime) = &part.mimeType {
+            if let Some(mime) = &part.mime_type {
                 if mime == "text/plain" {
                     if let Some(body) = &part.body {
                         if let Some(data) = &body.data {
@@ -336,7 +361,10 @@ fn extract_text_from_payload(payload: &MessagePayload) -> String {
                 } else if mime.starts_with("multipart") {
                     if let Some(sub_parts) = &part.parts {
                         // Recursive simplified
-                        // For now just ignore deep nesting to avoid complexity, usually text/plain is top level or parallel
+                        text.push_str(&extract_text_from_payload(&MessagePayload {
+                            body: None,
+                            parts: Some(sub_parts.to_vec()),
+                        }));
                     }
                 }
             }
@@ -367,9 +395,20 @@ fn extract_code_from_text(text: &str, re: &regex::Regex) -> Option<String> {
     None
 }
 
-/// Get current access token (refresh if needed)
-pub fn get_access_token() -> Result<String, String> {
-    let tokens = GMAIL_TOKENS.lock().unwrap().clone();
+/// Get current access token (refresh if needed, load from disk if needed)
+pub fn get_access_token(app: &AppHandle) -> Result<String, String> {
+    // 1. Try load from memory
+    let mut tokens_guard = GMAIL_TOKENS.lock().unwrap();
+
+    // 2. If memory empty, try load from disk
+    if tokens_guard.is_none() {
+        if try_load_from_disk(app) {
+            // Reload required since try_load_from_disk takes its own lock
+            *tokens_guard = GMAIL_TOKENS.lock().unwrap().clone();
+        }
+    }
+
+    let tokens = tokens_guard.clone();
 
     match tokens {
         Some(t) => Ok(t.access_token),
@@ -389,4 +428,80 @@ pub fn set_gmail_user(email: &str) {
 
 pub fn get_gmail_user() -> Option<String> {
     GMAIL_USER_EMAIL.lock().unwrap().clone()
+}
+
+/// Fetch verification code with retry mechanism
+/// Retries up to max_retries times with delay_seconds between each attempt
+pub fn fetch_verification_code_with_retry(
+    app: &AppHandle,
+    min_timestamp: i64,
+    max_retries: u32,
+    delay_seconds: u64,
+) -> Result<String, String> {
+    let mut last_error = String::new();
+
+    for attempt in 1..=max_retries {
+        match fetch_verification_code_api(app, min_timestamp) {
+            Ok(code) => {
+                return Ok(code);
+            }
+            Err(e) => {
+                last_error = e.clone();
+                if attempt < max_retries {
+                    // Wait before next attempt
+                    std::thread::sleep(std::time::Duration::from_secs(delay_seconds));
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "获取验证码失败 (已重试 {} 次): {}",
+        max_retries, last_error
+    ))
+}
+
+/// Result structure for verification code fetch with details
+#[derive(Debug, Serialize, Clone)]
+pub struct VerificationCodeResult {
+    pub success: bool,
+    pub code: Option<String>,
+    pub attempt: u32,
+    pub message: String,
+}
+
+/// Fetch verification code with detailed result
+pub fn fetch_verification_code_detailed(
+    app: &AppHandle,
+    min_timestamp: i64,
+    max_retries: u32,
+    delay_seconds: u64,
+) -> VerificationCodeResult {
+    let mut last_error = String::new();
+
+    for attempt in 1..=max_retries {
+        match fetch_verification_code_api(app, min_timestamp) {
+            Ok(code) => {
+                return VerificationCodeResult {
+                    success: true,
+                    code: Some(code),
+                    attempt,
+                    message: format!("验证码获取成功 (第 {} 次尝试)", attempt),
+                };
+            }
+            Err(e) => {
+                last_error = e.clone();
+                if attempt < max_retries {
+                    std::thread::sleep(std::time::Duration::from_secs(delay_seconds));
+                }
+            }
+        }
+    }
+
+    VerificationCodeResult {
+        success: false,
+        code: None,
+        attempt: max_retries,
+        message: format!("获取验证码失败 (已重试 {} 次): {}", max_retries, last_error),
+    }
 }

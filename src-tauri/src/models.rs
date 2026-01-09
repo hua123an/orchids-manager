@@ -32,6 +32,7 @@ pub struct Account {
     pub id: String, // Clerk User ID
     pub display_name: String,
     pub email: Option<String>,
+    pub password: Option<String>, // Added for auto-relogin
     pub avatar_url: Option<String>,
 
     pub last_active_at: Option<i64>, // Unix Timestamp
