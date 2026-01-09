@@ -69,6 +69,7 @@ impl CaptureService {
             // Keep track of the last captured ID to avoid log spam,
             // but we still want to update if credits change, so we might check periodically.
             let mut last_captured_id = String::new();
+            let mut last_json_mtime: Option<SystemTime> = None;
 
             loop {
                 // Check stop
@@ -78,21 +79,61 @@ impl CaptureService {
                     }
                 }
 
+                // 1. Check direct JSON capture (Fastest & Includes LocalStorage)
+                let shared_dir = get_manager_shared_dir();
+                let captured_file = shared_dir.join("captured_session.json");
+                
+                if captured_file.exists() {
+                    if let Ok(metadata) = fs::metadata(&captured_file) {
+                        if let Ok(mtime) = metadata.modified() {
+                            let is_new = match last_json_mtime {
+                                Some(last) => mtime > last,
+                                None => true,
+                            };
+
+                            if is_new {
+                                last_json_mtime = Some(mtime);
+                                // Give a tiny buffer for write completion
+                                thread::sleep(Duration::from_millis(500));
+
+                                if let Ok(content) = fs::read_to_string(&captured_file) {
+                                    if let Ok(account) = serde_json::from_str::<Account>(&content) {
+                                        let state = app_handle.state::<AccountManagerState>();
+                                        if let Ok(_) = state.add_account(account.clone()) {
+                                            let _ = app_handle.emit("debug-log", format!("Fast-Captured Account from JSON: {}", account.id));
+                                            
+                                            // Emit success if new
+                                            if last_captured_id != account.id {
+                                                let _ = app_handle.emit(
+                                                    "register_success",
+                                                    serde_json::json!({
+                                                        "email": account.email.clone().unwrap_or_default(),
+                                                        "password": "Captured via JSON"
+                                                    }),
+                                                );
+                                                last_captured_id = account.id.clone();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. Fallback: Check SQLite DB
                 if cookie_path.exists() {
                     match process_cookies(&cookie_path) {
                         Ok(Some(account)) => {
                             let state = app_handle.state::<AccountManagerState>();
                             let acc_id = account.id.clone();
 
-                            // Try to add/update
                             if let Ok(_) = state.add_account(account.clone()) {
                                 if last_captured_id != acc_id {
                                     let _ = app_handle.emit(
                                         "debug-log",
-                                        format!("Auto-Captured Account: {}", acc_id),
+                                        format!("DB-Captured Account: {}", acc_id),
                                     );
-
-                                    // Emit success to stop automation UI
                                     let _ = app_handle.emit(
                                         "register_success",
                                         serde_json::json!({
@@ -100,23 +141,17 @@ impl CaptureService {
                                             "password": "Captured via DB"
                                         }),
                                     );
-
                                     last_captured_id = acc_id;
                                 }
                             }
                         }
-                        Ok(None) => {
-                            // No session in DB (logged out?)
-                        }
-                        Err(e) => {
-                            // Suppress excessive error logs for locked DBs etc
-                            // let _ = app_handle.emit("debug-log", format!("Capture Error: {}", e));
-                        }
+                        Ok(None) => {}
+                        Err(_) => {}
                     }
                 }
 
-                // Poll every 3 seconds
-                thread::sleep(Duration::from_secs(3));
+                // Poll every 1 seconds
+                thread::sleep(Duration::from_secs(1));
             }
             let _ = app_handle.emit("debug-log", "Monitoring thread exited");
         });
@@ -193,7 +228,7 @@ pub fn process_cookies(path: &Path) -> Result<Option<Account>, String> {
                         let image = profile["imageUrl"].as_str().map(|s| s.to_string());
                         let full_name = profile["firstName"].as_str().unwrap_or("User").to_string();
 
-                        let new_account = Account {
+                        let mut new_account = Account {
                             id: user_id.clone(),
                             display_name: full_name.clone(),
                             email: Some(email.clone()),
@@ -215,7 +250,32 @@ pub fn process_cookies(path: &Path) -> Result<Option<Account>, String> {
                                 credits: Some(credits),
                             }),
                             cookies: cookies.clone(), // Save all cookies
+                            local_storage: None,
+                            machine_id: None,
                         };
+
+                        // Try to merge local_storage from caught JSON if available (Captured by injection.js)
+                        let shared_dir = get_manager_shared_dir();
+                        let captured_file = shared_dir.join("captured_session.json");
+                        if captured_file.exists() {
+                            if let Ok(content) = fs::read_to_string(&captured_file) {
+                                if let Ok(json_account) = serde_json::from_str::<Account>(&content)
+                                {
+                                    if json_account.id == new_account.id {
+                                        // Merge found local storage
+                                        println!("[CaptureService] Merged LocalStorage for {} (Keys: {:?})", 
+                                            new_account.id, 
+                                            json_account.local_storage.as_ref().map(|ls| ls.len()).unwrap_or(0)
+                                        );
+                                        new_account.local_storage = json_account.local_storage;
+                                        new_account.machine_id = json_account.machine_id;
+                                    } else {
+                                        println!("[CaptureService] ID mismatch for JSON merge: {} vs {}", json_account.id, new_account.id);
+                                    }
+                                }
+                            }
+                        }
+
                         return Ok(Some(new_account));
                     }
                 }

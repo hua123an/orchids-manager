@@ -26,8 +26,16 @@ impl OrchidsCore {
         if main_js_path.exists() {
             let content = fs::read_to_string(&main_js_path).map_err(|e| e.to_string())?;
             // If it contains V2 marker, we are good.
-            if content.contains("// --- ORCHIDS MANAGER INJECTION START V2 ---") {
-                return Ok("Orchids is patched (V2) and ready.".into());
+            if content.contains("// --- ORCHIDS MANAGER INJECTION START V2.5 ---") {
+                return Ok("Orchids is patched (V2.5) and ready.".into());
+            }
+
+            if content.contains("// --- ORCHIDS MANAGER INJECTION START V2.4 ---")
+                || content.contains("// --- ORCHIDS MANAGER INJECTION START V2.3 ---")
+                || content.contains("// --- ORCHIDS MANAGER INJECTION START V2.2 ---")
+                || content.contains("// --- ORCHIDS MANAGER INJECTION START V2.1 ---")
+            {
+                println!("Detected old injection - Removing to force update...");
             }
 
             // If not (unpatched OR old V1 patch), we proceed to inject.
@@ -56,9 +64,9 @@ impl OrchidsCore {
 
     fn inject_script(target_path: &Path) -> Result<String, String> {
         println!("Injecting V2 control script into {:?}...", target_path);
+        let injection_code = include_str!("../assets/injection.js"); // Force include
 
         let mut original_content = fs::read_to_string(target_path).unwrap_or_default();
-        let injection_code = include_str!("../assets/injection.js");
 
         // CLEANUP OLD V1 OR PARTIAL INJECTIONS
         // We look for the Start/End markers and remove everything between them.
@@ -98,8 +106,9 @@ impl OrchidsCore {
         thread::sleep(Duration::from_millis(1000));
 
         // 2. PREPARE JSON (Shared Path)
+        // 2. PREPARE JSON (Shared Path)
         let home = std::env::var("HOME").map_err(|_| "No HOME env".to_string())?;
-        let shared_dir = PathBuf::from(home).join("Library/Application Support/OrchidsManager");
+        let shared_dir = PathBuf::from(&home).join("Library/Application Support/OrchidsManager");
 
         if !shared_dir.exists() {
             fs::create_dir_all(&shared_dir).map_err(|e| e.to_string())?;
@@ -109,6 +118,20 @@ impl OrchidsCore {
         let json = serde_json::to_string_pretty(account).map_err(|e| e.to_string())?;
         fs::write(&restore_file, json)
             .map_err(|e| format!("Failed to write restore file: {}", e))?;
+
+        // 2b. Restore Machine ID (Critical for validation)
+        if let Some(machine_id) = &account.machine_id {
+            let app_data_dir = PathBuf::from(&home).join("Library/Application Support/Orchids");
+            if !app_data_dir.exists() {
+                let _ = fs::create_dir_all(&app_data_dir);
+            }
+            let updater_id_path = app_data_dir.join(".updaterId");
+            println!(
+                "Restoring Machine ID: {} to {:?}",
+                machine_id, updater_id_path
+            );
+            let _ = fs::write(updater_id_path, machine_id);
+        }
 
         // 3. WIPE CLEAN
         // 3. WIPE CLEAN

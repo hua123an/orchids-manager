@@ -16,6 +16,8 @@ use proxy_service::ProxyService;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::AccountManagerState;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 // Global state for manual verification code input
@@ -968,6 +970,8 @@ async fn clerk_action_register_webview(
                                                                                         credits: Some(credits),
                                                                                     }),
                                                                                     cookies: cookie_vec,
+                                                                                    local_storage: None,
+                                                                                    machine_id: None,
                                                                                 };
 
                                                                                 // 5. Save to State
@@ -1053,7 +1057,61 @@ pub fn run() {
         app.manage(state);
         app.manage(Arc::new(CaptureService::new()));
         app.manage(Arc::new(ProxyService::new(app.handle().clone())));
+
+        // --- TRAY SETUP ---
+        // Ensure we have an icon
+        if let Some(icon) = app.default_window_icon() {
+            let show_i = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+
+            let _tray = TrayIconBuilder::new()
+                .icon(icon.clone())
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    match event.id.as_ref() {
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { .. } = event {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            if window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false) {
+                                // If visible and focused? Better just toggle or show always? 
+                                // Standard behavior: Click -> Toggle
+                                if window.is_focused().unwrap_or(false) {
+                                     let _ = window.hide();
+                                } else {
+                                     let _ = window.show();
+                                     let _ = window.set_focus();
+                                }
+                            } else {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    }
+                })
+                .build(app)?;
+        }
+
         Ok(())
+    })
+    .on_window_event(|window, event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            let _ = window.hide();
+            api.prevent_close();
+        }
     })
     .invoke_handler(tauri::generate_handler![
         ensure_patched,

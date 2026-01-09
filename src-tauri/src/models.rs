@@ -39,6 +39,8 @@ pub struct Account {
 
     pub user_info: Option<UserInfo>, // Full profile data
     pub cookies: Vec<CookieData>,    // Session Snapshot
+    pub local_storage: Option<std::collections::HashMap<String, String>>,
+    pub machine_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
